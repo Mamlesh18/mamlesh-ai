@@ -12,7 +12,7 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-system = {"mcp": {}, "tool_owner": {}, "graph": None}
+system = {"mcp": {}, "tool_owner": {}, "graph": None, "context": {}, "orchestrator_context": {}}
 _tasks: set[asyncio.Task] = set()  # keeps running queries alive
 
 
@@ -23,9 +23,11 @@ async def startup():
     events.main_loop = asyncio.get_running_loop()
     await asyncio.to_thread(brain_tools.sync)  # build/load the FAISS index from kb/ and memory/
     system["mcp"] = await load_mcp_tools()
-    agents, system["tool_owner"] = build_domain_agents(system["mcp"])
-    system["graph"] = build_orchestrator(agents, system["tool_owner"])
+    agents, system["tool_owner"], system["context"] = build_domain_agents(system["mcp"])
+    system["graph"], system["orchestrator_context"] = build_orchestrator(agents, system["tool_owner"])
     log.info("Orchestrator ready with %d domain agents", len(agents))
+    for name, c in system["context"].items():
+        log.info("  %-12s %3d tools, %6d tokens sent on every call", name, c["tools"], c["total"])
 
 
 def graph_info() -> dict:
@@ -47,8 +49,8 @@ def graph_info() -> dict:
                 "error": None,
                 "tools": [{"name": t.name, "description": t.description} for t in CUSTOM_TOOLS[name]],
             })
-        domains.append({"name": name, "description": desc, "servers": servers})
-    return {"domains": domains}
+        domains.append({"name": name, "description": desc, "servers": servers, "context": system["context"].get(name)})
+    return {"domains": domains, "orchestrator": {"context": system["orchestrator_context"]}}
 
 
 def health() -> dict:
@@ -75,19 +77,27 @@ def start_run(query: str, source: str = "text") -> str:
 async def _run(run_id: str, query: str, source: str):
     started = datetime.now(timezone.utc)
     await emit(run_id, "run.start", query=query, source=source)
+    usage = {}  # filled in by every LLM call: {agent: {calls, input_tokens, cached_tokens, output_tokens, cost}}
     try:
-        out = await system["graph"].ainvoke({"query": query}, config={"configurable": {"run_id": run_id}})
+        out = await system["graph"].ainvoke({"query": query}, config={"configurable": {"run_id": run_id, "usage": usage}})
         answer, status = out.get("answer", ""), "done"
-        await emit(run_id, "run.end", answer=answer)
     except Exception as e:
         log.exception("Run %s failed", run_id)
         answer, status = "", "error"
         await emit(run_id, "run.error", error=str(e))
 
+    ended = datetime.now(timezone.utc)
+    totals = {k: sum(a[k] for a in usage.values()) for k in ("calls", "input_tokens", "cached_tokens", "output_tokens", "cost")}
+    totals["duration_ms"] = int((ended - started).total_seconds() * 1000)
+    if status == "done":
+        await emit(run_id, "run.end", answer=answer, usage=usage, totals=totals)
+    log.info("Run %s: %d LLM calls, %d in / %d out tokens, $%.5f", run_id, totals["calls"],
+             totals["input_tokens"], totals["output_tokens"], totals["cost"])
+
     if database.db is not None:
         await database.db.runs.insert_one({
             "_id": run_id, "query": query, "source": source, "status": status, "answer": answer,
-            "started_at": started, "ended_at": datetime.now(timezone.utc),
+            "usage": usage, "totals": totals, "started_at": started, "ended_at": ended,
         })
 
 

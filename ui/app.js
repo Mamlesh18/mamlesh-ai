@@ -3,11 +3,13 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
+const tok = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n ?? 0));
+const usd = (c) => `$${(c || 0).toFixed(c < 0.01 ? 5 : 4)}`;
 
 let cy;                 // the graph
 let graphData = {};     // from /api/graph
 let selected = null;    // id of the node shown in the side panel
-let run = null;         // the run currently shown: {id, plan, domains: {name: {task, result, status}}}
+let run = null;         // the run currently shown: {id, plan, domains: {name: {task, result, status}}, usage: {agent: totals}, totals}
 const liveCalls = {};   // server id -> [calls in this browser session, newest first]
 const activeCalls = {}; // server id -> number of tool calls still running
 
@@ -15,9 +17,9 @@ const activeCalls = {}; // server id -> number of tool calls still running
 
 async function loadGraph() {
   graphData = await (await fetch("/api/graph")).json();
-  const els = [{ data: { id: "orchestrator", label: "Orchestrator", kind: "orchestrator" } }];
+  const els = [{ data: { id: "orchestrator", label: "Orchestrator", base: "Orchestrator", kind: "orchestrator" } }];
   for (const d of graphData.domains) {
-    els.push({ data: { id: `d:${d.name}`, label: d.name, kind: "domain" } });
+    els.push({ data: { id: `d:${d.name}`, label: d.name, base: d.name, kind: "domain" } });
     els.push({ data: { source: "orchestrator", target: `d:${d.name}` } });
     for (const s of d.servers) {
       els.push({ data: { id: `s:${s.id}`, label: s.name, kind: "server" }, classes: s.status });
@@ -33,6 +35,7 @@ async function loadGraph() {
     style: [
       { selector: "node", style: {
           label: "data(label)", color: "#e6e8ee", "font-size": 12, "text-valign": "bottom", "text-margin-y": 6,
+          "text-wrap": "wrap", "text-halign": "center",
           "background-color": "#2a2f3d", "border-width": 2, "border-color": "#3a4152", width: 34, height: 34 } },
       { selector: "node[kind='orchestrator']", style: { width: 58, height: 58, "background-color": "#1f3b73", "font-size": 14, "font-weight": 600 } },
       { selector: "node[kind='domain']", style: { width: 44, height: 44, shape: "round-rectangle" } },
@@ -66,7 +69,56 @@ function setEdge(target, state) {
   if (state) e.addClass(state);
 }
 
+// ---------- Cost & tokens ----------
+
+function setUsageLabel(agent, u) {
+  const n = cy.getElementById(agent === "orchestrator" ? "orchestrator" : `d:${agent}`);
+  if (n.length) n.data("label", `${n.data("base")}\n${usd(u.cost)} · ${tok(u.input_tokens + u.output_tokens)} tok`);
+}
+
+function renderUsage() {
+  const el = $("usage");
+  const rows = Object.entries(run?.usage || {});
+  if (!rows.length) { el.className = "muted"; el.textContent = "No LLM calls yet."; return; }
+  el.className = "";
+  const sum = (k) => rows.reduce((s, [, u]) => s + (u[k] || 0), 0);
+  const t = run.totals || { calls: sum("calls"), input_tokens: sum("input_tokens"), cached_tokens: sum("cached_tokens"), output_tokens: sum("output_tokens"), cost: sum("cost") };
+  const ctx = (a) => a === "orchestrator" ? "" : tok(graphData.domains.find((d) => d.name === a)?.context?.total || 0);
+  el.innerHTML = `
+    <div class="stats">
+      <div class="stat"><b>${usd(t.cost)}</b><span>total cost${t.duration_ms ? ` · ${(t.duration_ms / 1000).toFixed(1)} s` : ""}</span></div>
+      <div class="stat"><b>${tok(t.input_tokens + t.output_tokens)}</b><span>tokens · ${t.calls} LLM calls</span></div>
+    </div>
+    <table class="usage">
+      <tr><th>agent</th><th>calls</th><th>in</th><th>cached</th><th>out</th><th>cost</th><th title="Prompt + tool definitions sent on every call">ctx/call</th></tr>
+      ${rows.map(([a, u]) => `<tr><td>${esc(a)}</td><td>${u.calls}</td><td>${tok(u.input_tokens)}</td><td>${tok(u.cached_tokens)}</td><td>${tok(u.output_tokens)}</td><td>${usd(u.cost)}</td><td>${ctx(a)}</td></tr>`).join("")}
+      <tr class="total"><td>total</td><td>${t.calls}</td><td>${tok(t.input_tokens)}</td><td>${tok(t.cached_tokens)}</td><td>${tok(t.output_tokens)}</td><td>${usd(t.cost)}</td><td></td></tr>
+    </table>`;
+}
+
+function contextHtml(c) {
+  if (!c) return "";
+  return `<h4>Context size (sent on every LLM call)</h4>
+    <div class="stats">
+      <div class="stat"><b>${tok(c.total)}</b><span>tokens per call</span></div>
+      <div class="stat"><b>${c.tools}</b><span>tools</span></div>
+      <div class="stat"><b>${tok(c.prompt_tokens)}</b><span>prompt tokens</span></div>
+      <div class="stat"><b>${tok(c.tool_tokens)}</b><span>tool definition tokens</span></div>
+    </div>`;
+}
+
+function usageHtml(agent) {
+  const u = run?.usage?.[agent];
+  if (!u) return "";
+  return `<h4>Tokens &amp; cost in this run</h4>
+    <div class="stats">
+      <div class="stat"><b>${usd(u.cost)}</b><span>cost · ${u.calls} LLM calls</span></div>
+      <div class="stat"><b>${tok(u.input_tokens)} / ${tok(u.output_tokens)}</b><span>in / out tokens (${tok(u.cached_tokens)} cached)</span></div>
+    </div>`;
+}
+
 function resetGraph() {
+  cy.nodes().forEach((n) => n.data("base") && n.data("label", n.data("base")));
   cy.nodes().removeClass("queued running done failed");
   cy.edges().removeClass("active done");
   for (const k in activeCalls) delete activeCalls[k];
@@ -80,8 +132,15 @@ function renderPanel() {
 
   if (selected === "orchestrator") {
     const steps = run?.plan?.map((s) => `<div class="tool"><b>${esc(s.domain)}</b><p>${esc(s.task)}</p></div>`).join("");
+    const oc = graphData.orchestrator?.context || {};
     p.innerHTML = `<h2>Orchestrator</h2><p class="muted">Plans the work and sends each step to a domain agent.</p>
-      <h4>Current plan</h4>${steps || '<p class="muted">No plan yet.</p>'}`;
+      <h4>Current plan</h4>${steps || '<p class="muted">No plan yet.</p>'}
+      ${usageHtml("orchestrator")}
+      <h4>Prompt sizes</h4>
+      <div class="stats">
+        <div class="stat"><b>${tok(oc.planner_prompt_tokens)}</b><span>planner prompt tokens</span></div>
+        <div class="stat"><b>${tok(oc.synthesizer_prompt_tokens)}</b><span>synthesizer prompt tokens</span></div>
+      </div>`;
     return;
   }
 
@@ -94,6 +153,8 @@ function renderPanel() {
     p.innerHTML = `<h2>${esc(name)} agent</h2><p class="muted">${esc(d.description)}</p>
       <h4>In this run</h4>${r ? `<span class="badge ${r.status}">${r.status}</span>
         <p><b>Task:</b> ${esc(r.task)}</p>${r.result ? `<p><b>Result:</b> ${esc(r.result)}</p>` : ""}` : '<p class="muted">Not used in this run.</p>'}
+      ${usageHtml(name)}
+      ${contextHtml(d.context)}
       <h4>MCP servers / tools</h4>${servers || '<p class="muted">No tools configured yet. Add MCP servers in mcp_servers/config.py.</p>'}`;
     return;
   }
@@ -143,7 +204,8 @@ function logEvent(ev) {
     "tool.start": `${ev.server} · ${ev.tool}()`,
     "tool.end": `${ev.server} · ${ev.tool} ✓ ${ev.duration_ms} ms`,
     "tool.error": `${ev.server} · ${ev.tool} ✗ ${ev.error}`,
-    "run.end": "done",
+    usage: `${ev.agent} LLM call: ${ev.input_tokens} in / ${ev.output_tokens} out · ${usd(ev.cost)}`,
+    "run.end": `done · ${usd(ev.totals?.cost)} · ${tok((ev.totals?.input_tokens || 0) + (ev.totals?.output_tokens || 0))} tokens`,
     "run.error": `error: ${ev.error}`,
   }[ev.type] || "";
   const li = document.createElement("li");
@@ -153,8 +215,9 @@ function logEvent(ev) {
 
 function onEvent(ev) {
   if (ev.type === "run.start") {
-    run = { id: ev.run_id, plan: [], domains: {} };
+    run = { id: ev.run_id, plan: [], domains: {}, usage: {}, totals: null };
     resetGraph();
+    renderUsage();
     $("log").innerHTML = "";
     $("answer").textContent = "";
     $("answer").classList.remove("muted");
@@ -199,7 +262,16 @@ function onEvent(ev) {
       break;
     }
     case "token": $("answer").textContent += ev.text; break;
+    case "usage":
+      run.usage[ev.agent] = ev.agent_total;
+      setUsageLabel(ev.agent, ev.agent_total);
+      renderUsage();
+      break;
     case "run.end":
+      run.usage = ev.usage || run.usage;
+      run.totals = ev.totals;
+      Object.entries(run.usage).forEach(([a, u]) => setUsageLabel(a, u));
+      renderUsage();
       setNode("orchestrator", "done");
       if (!$("answer").textContent) $("answer").textContent = ev.answer;
       setBusy(false);
