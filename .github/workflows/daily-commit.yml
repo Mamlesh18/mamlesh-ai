@@ -1,0 +1,38 @@
+# Adds one line to docs/daily-log.md every morning and commits it, to keep the GitHub contribution streak.
+# Runs on GitHub's servers, so your computer does not need to be on.
+name: Daily commit
+
+on:
+  schedule:
+    - cron: "30 2 * * *"   # 02:30 UTC = 08:00 IST, every day (GitHub may start it a few minutes late)
+  workflow_dispatch:        # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add today's line to the daily log
+        run: |
+          TODAY=$(TZ=Asia/Kolkata date +%Y-%m-%d)
+          FILE=docs/daily-log.md
+          [ -f "$FILE" ] || printf "# Daily log\n\nOne line per day, added automatically by .github/workflows/daily-commit.yml.\n\n" > "$FILE"
+          if grep -q "^- $TODAY" "$FILE"; then
+            echo "Already logged $TODAY"; exit 0
+          fi
+          echo "- $TODAY: daily check-in" >> "$FILE"
+
+      - name: Commit and push
+        run: |
+          # This email belongs to your GitHub account, so the commit counts toward your contribution graph.
+          git config user.name "Mamlesh18"
+          git config user.email "113204216+Mamlesh18@users.noreply.github.com"
+          git add docs/daily-log.md
+          if git diff --cached --quiet; then echo "Nothing to commit"; exit 0; fi
+          # [skip render] stops Render from redeploying for this commit.
+          git commit -m "Daily log $(TZ=Asia/Kolkata date +%Y-%m-%d) [skip render]"
+          git push
