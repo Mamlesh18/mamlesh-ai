@@ -22,8 +22,12 @@ const R_DOMAIN = 210, R_SERVER = 120, SERVER_SPREAD = 0.7, R_TOOL = 85;
 const polar = (cx, cy, r, a) => ({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
 const expanded = new Set(); // server ids whose tools are shown
 
+const toLogin = () => { location.href = "/login"; };
+
 async function loadGraph() {
-  graphData = await (await fetch("/api/graph")).json();
+  const res = await fetch("/api/graph");
+  if (res.status === 401) return toLogin();
+  graphData = await res.json();
   const els = [{ data: { id: "orchestrator", label: "ORCHESTRATOR", base: "ORCHESTRATOR", kind: "orchestrator" }, position: { x: 0, y: 0 } }];
   const n = graphData.domains.length;
 
@@ -366,7 +370,13 @@ function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.onopen = () => { $("status-dot").className = "dot live"; $("status-text").textContent = "ready"; };
   ws.onmessage = (m) => onEvent(JSON.parse(m.data));
-  ws.onclose = () => { $("status-dot").className = "dot"; $("status-text").textContent = "reconnecting…"; setTimeout(connect, 1500); };
+  ws.onclose = async () => {
+    $("status-dot").className = "dot";
+    $("status-text").textContent = "reconnecting…";
+    // If the socket closed because the session expired, go to the login page instead of retrying forever.
+    try { if ((await fetch("/api/graph", { method: "GET" })).status === 401) return toLogin(); } catch {}
+    setTimeout(connect, 1500);
+  };
 }
 
 function setBusy(busy) {
@@ -380,6 +390,7 @@ async function submit(source = "text") {
   const query = $("query").value.trim();
   if (!query) return;
   const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query, source }) });
+  if (r.status === 401) return toLogin();
   if (!r.ok) alert(await r.text());
   $("query").value = "";
 }
@@ -440,4 +451,9 @@ function cleanupMic() {
 
 // ---------- Start ----------
 
-loadGraph().then(connect);
+$("logout").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  toLogin();
+});
+
+loadGraph().then(() => graphData.domains && connect());

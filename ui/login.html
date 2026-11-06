@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mamlesh AI OS · Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body.login { display: grid; place-items: center; grid-template-rows: 1fr; min-height: 100vh; height: auto; }
+    .login-card { width: min(440px, 100%); background: var(--paper); border: var(--line); box-shadow: 10px 10px 0 var(--ink); position: relative; }
+    .login-head { background: var(--yellow); border-bottom: var(--line); padding: 22px 24px 18px; }
+    .login-head h1 { margin: 0; font: 700 34px/1 var(--sans); letter-spacing: -0.04em; text-transform: uppercase; }
+    .login-head p { margin: 8px 0 0; font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .login-body { padding: 22px 24px 24px; display: grid; gap: 16px; }
+    label { display: grid; gap: 6px; font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .login-body input {
+      padding: 12px 14px; border: var(--line); background: var(--paper); font: 500 15px var(--mono); color: var(--ink);
+      outline: none; box-shadow: 3px 3px 0 var(--ink);
+    }
+    .login-body input:focus { box-shadow: 5px 5px 0 var(--blue); }
+    .login-body button { padding: 13px; font-size: 15px; background: var(--ink); color: var(--yellow); }
+    .login-body button:hover { background: var(--blue); color: #fff; }
+    .login-body button:disabled { opacity: .6; cursor: wait; }
+    #error { display: none; background: var(--red); color: #fff; border: var(--line); padding: 10px 12px; font: 700 13px var(--mono); }
+    .corner { position: absolute; top: -3px; right: -3px; background: var(--ink); color: var(--yellow); font: 700 11px var(--mono); padding: 4px 8px; }
+  </style>
+</head>
+<body class="login">
+  <div class="login-card">
+    <span class="corner">PRIVATE</span>
+    <div class="login-head">
+      <h1>Mamlesh//OS</h1>
+      <p>Authorised access only</p>
+    </div>
+    <form class="login-body" id="login-form">
+      <label>Email
+        <input type="email" id="email" autocomplete="username" required autofocus>
+      </label>
+      <label>Password
+        <input type="password" id="password" autocomplete="current-password" required>
+      </label>
+      <div id="error"></div>
+      <button type="submit" id="submit">Log in →</button>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById("login-form");
+    const error = document.getElementById("error");
+    const submit = document.getElementById("submit");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      error.style.display = "none";
+      submit.disabled = true;
+      try {
+        const r = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: document.getElementById("email").value, password: document.getElementById("password").value }),
+        });
+        if (r.ok) { location.href = "/"; return; }
+        const data = await r.json().catch(() => ({}));
+        error.textContent = data.detail || "Login failed.";
+        error.style.display = "block";
+      } catch {
+        error.textContent = "Could not reach the server.";
+        error.style.display = "block";
+      }
+      submit.disabled = false;
+    });
+  </script>
+</body>
+</html>

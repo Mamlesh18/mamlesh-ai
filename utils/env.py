@@ -25,6 +25,12 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 CANVA_CLIENT_ID = os.getenv("CANVA_CLIENT_ID", "")
 CANVA_CLIENT_SECRET = os.getenv("CANVA_CLIENT_SECRET", "")
 
+# Login for the web UI. If AUTH_EMAIL / AUTH_PASSWORD are missing, nobody can log in.
+AUTH_EMAIL = os.getenv("AUTH_EMAIL", "").strip().lower()
+AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")  # signs the login cookie; if missing, a random one is used
+SESSION_DAYS = int(os.getenv("SESSION_DAYS", "7"))
+
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
 

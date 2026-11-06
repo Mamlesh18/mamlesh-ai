@@ -2,15 +2,20 @@
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router
-from services import db, run_service
+from services import auth, db, run_service
 from utils.env import HOST, OPENAI_API_KEY, PORT, ROOT_DIR
 from utils.logger import get_logger
 
 log = get_logger("main")
+UI_DIR = ROOT_DIR / "ui"
+
+# Reachable without logging in. Everything else needs the login cookie.
+PUBLIC_PATHS = {"/login", "/api/login", "/style.css", "/healthz"}
 
 
 @asynccontextmanager
@@ -23,9 +28,33 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Mamlesh AI OS", lifespan=lifespan)
+app = FastAPI(title="Mamlesh AI OS", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    if request.url.path in PUBLIC_PATHS or auth.is_valid(request.cookies.get(auth.COOKIE)):
+        return await call_next(request)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "Not logged in"}, status_code=401)
+    return RedirectResponse("/login")
+
+
+@app.get("/login")
+def login_page(request: Request):
+    if auth.is_valid(request.cookies.get(auth.COOKIE)):
+        return RedirectResponse("/")
+    return FileResponse(UI_DIR / "login.html")
+
+
+@app.get("/healthz")
+def healthz():
+    """Public uptime check for Render (shows nothing private)."""
+    return {"ok": True}
+
+
 app.include_router(router)
-app.mount("/", StaticFiles(directory=ROOT_DIR / "ui", html=True), name="ui")
+app.mount("/", StaticFiles(directory=UI_DIR, html=True), name="ui")
 
 if __name__ == "__main__":
     uvicorn.run(app, host=HOST, port=PORT)
