@@ -3,6 +3,7 @@
 Event types:
   run.start, plan, domain.start, tool.start, tool.end, tool.error, domain.end, token, run.end, run.error
 """
+import asyncio
 from collections import deque
 from datetime import datetime, timezone
 
@@ -15,10 +16,22 @@ log = get_logger(__name__)
 
 clients: set[WebSocket] = set()
 recent_events: deque = deque(maxlen=1000)  # used when MongoDB is not available
+main_loop: asyncio.AbstractEventLoop | None = None  # set at startup
 
 
 async def emit(run_id: str, type: str, **data):
     event = {"run_id": run_id, "type": type, "ts": datetime.now(timezone.utc).isoformat(), **data}
+
+    # Sync tools run in a worker thread with their own event loop. WebSockets and MongoDB only work
+    # on the main loop, so hand the event over to it.
+    if main_loop is not None and asyncio.get_running_loop() is not main_loop:
+        asyncio.run_coroutine_threadsafe(_send(event), main_loop)
+        return
+    await _send(event)
+
+
+async def _send(event: dict):
+    type = event["type"]
     recent_events.append(event)
 
     for ws in list(clients):

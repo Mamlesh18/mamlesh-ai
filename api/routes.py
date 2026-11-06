@@ -12,6 +12,12 @@ class RunRequest(BaseModel):
     source: str = "text"  # "text" or "voice"
 
 
+@router.get("/api/health")
+def get_health():
+    """Shows MongoDB, Brain (which knowledge files were found) and MCP server status."""
+    return run_service.health()
+
+
 @router.get("/api/graph")
 def get_graph():
     """Domains, their MCP servers and the tools on each server."""

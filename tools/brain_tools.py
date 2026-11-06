@@ -96,6 +96,8 @@ def sync():
             return
 
     chunks = []
+    if not _source_files():
+        log.warning("Brain: no knowledge files found in %s", ", ".join(str(d) for d in (KB_DIR, KB_SECRET_DIR, MEMORY_DIR)))
     for f in _source_files():
         chunks += _split(f.read_text(encoding="utf-8"), f"{f.parent.name}/{f.name}")
     if not chunks:
@@ -108,6 +110,14 @@ def sync():
     faiss.write_index(_index, str(INDEX_FILE))
     CHUNKS_FILE.write_text(json.dumps({"fingerprint": current, "chunks": chunks}, indent=1), encoding="utf-8")
     log.info("Brain rebuilt: %d chunks from %d files", len(chunks), len(_source_files()))
+
+
+def status() -> dict:
+    return {
+        "chunks": len(_chunks),
+        "files": [str(f) for f in _source_files()],
+        "folders_checked": {str(d): d.is_dir() for d in (KB_DIR, KB_SECRET_DIR, MEMORY_DIR)},
+    }
 
 
 @tool

@@ -17,8 +17,10 @@ _tasks: set[asyncio.Task] = set()  # keeps running queries alive
 
 
 async def startup():
+    from services import events
     from tools import brain_tools
 
+    events.main_loop = asyncio.get_running_loop()
     await asyncio.to_thread(brain_tools.sync)  # build/load the FAISS index from kb/ and memory/
     system["mcp"] = await load_mcp_tools()
     agents, system["tool_owner"] = build_domain_agents(system["mcp"])
@@ -47,6 +49,18 @@ def graph_info() -> dict:
             })
         domains.append({"name": name, "description": desc, "servers": servers})
     return {"domains": domains}
+
+
+def health() -> dict:
+    """Quick status check: database, Brain knowledge files, and each MCP server."""
+    from tools import brain_tools
+
+    return {
+        "mongodb": database.db is not None,
+        "brain": brain_tools.status(),
+        "mcp": {f"{d}/{n}": s["status"] if not s["error"] else f"error: {s['error'][:200]}"
+                for d, servers in system["mcp"].items() for n, s in servers.items()},
+    }
 
 
 def start_run(query: str, source: str = "text") -> str:
