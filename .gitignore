@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# app data (FAISS index, KB notes)
+data/
+# personal knowledge + daily notes (private: never commit)
+kb/
+memory/
