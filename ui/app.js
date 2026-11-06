@@ -15,46 +15,113 @@ const activeCalls = {}; // server id -> number of tool calls still running
 
 // ---------- Graph ----------
 
+// Radial layout: Orchestrator in the centre, domain agents on a circle around it,
+// each agent's MCP servers fanned outward, and each server's tools fanned outward again (shown on demand).
+const C = { ink: "#0a0a0a", paper: "#ffffff", bg: "#f3efe6", yellow: "#ffe500", pink: "#ff4fa3", blue: "#2f6bff", green: "#00c46a", red: "#ff3b2f" };
+const R_DOMAIN = 210, R_SERVER = 120, SERVER_SPREAD = 0.7, R_TOOL = 85;
+const polar = (cx, cy, r, a) => ({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+const expanded = new Set(); // server ids whose tools are shown
+
 async function loadGraph() {
   graphData = await (await fetch("/api/graph")).json();
-  const els = [{ data: { id: "orchestrator", label: "Orchestrator", base: "Orchestrator", kind: "orchestrator" } }];
-  for (const d of graphData.domains) {
-    els.push({ data: { id: `d:${d.name}`, label: d.name, base: d.name, kind: "domain" } });
+  const els = [{ data: { id: "orchestrator", label: "ORCHESTRATOR", base: "ORCHESTRATOR", kind: "orchestrator" }, position: { x: 0, y: 0 } }];
+  const n = graphData.domains.length;
+
+  graphData.domains.forEach((d, i) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    const dp = polar(0, 0, R_DOMAIN, a);
+    const label = d.name.toUpperCase();
+    els.push({ data: { id: `d:${d.name}`, label, base: label, kind: "domain" }, position: dp, classes: d.servers.length ? "" : "empty" });
     els.push({ data: { source: "orchestrator", target: `d:${d.name}` } });
-    for (const s of d.servers) {
-      els.push({ data: { id: `s:${s.id}`, label: s.name, kind: "server" }, classes: s.status });
+
+    d.servers.forEach((s, j) => {
+      const sa = a + (j - (d.servers.length - 1) / 2) * SERVER_SPREAD;
+      const sp = polar(dp.x, dp.y, R_SERVER, sa);
+      els.push({ data: { id: `s:${s.id}`, label: `${s.name}\n${s.tools.length} tools`, kind: "server" }, position: sp, classes: s.status });
       els.push({ data: { source: `d:${d.name}`, target: `s:${s.id}` } });
-    }
-  }
+
+      // Tools: an arc facing away from the agent, two staggered rows when there are many.
+      const m = s.tools.length;
+      const step = Math.min(0.32, 2.8 / Math.max(m, 1));
+      s.tools.forEach((t, k) => {
+        const ta = sa + (k - (m - 1) / 2) * step;
+        const tp = polar(sp.x, sp.y, R_TOOL + (m > 12 ? (k % 2) * 40 : 0), ta);
+        els.push({ data: { id: `t:${s.id}/${t.name}`, label: t.name, kind: "tool", server: s.id }, position: tp, classes: "hidden" });
+        els.push({ data: { source: `s:${s.id}`, target: `t:${s.id}/${t.name}`, server: s.id }, classes: "tool-edge hidden" });
+      });
+    });
+  });
 
   cy = cytoscape({
     container: $("graph"),
     elements: els,
-    layout: { name: "breadthfirst", roots: ["orchestrator"], spacingFactor: 1.15, padding: 30 },
-    wheelSensitivity: 0.2,
+    layout: { name: "preset", fit: false },
+    wheelSensitivity: 0.25,
+    minZoom: 0.2,
+    maxZoom: 3,
     style: [
       { selector: "node", style: {
-          label: "data(label)", color: "#e6e8ee", "font-size": 12, "text-valign": "bottom", "text-margin-y": 6,
-          "text-wrap": "wrap", "text-halign": "center",
-          "background-color": "#2a2f3d", "border-width": 2, "border-color": "#3a4152", width: 34, height: 34 } },
-      { selector: "node[kind='orchestrator']", style: { width: 58, height: 58, "background-color": "#1f3b73", "font-size": 14, "font-weight": 600 } },
-      { selector: "node[kind='domain']", style: { width: 44, height: 44, shape: "round-rectangle" } },
-      { selector: "node[kind='server']", style: { shape: "diamond", width: 30, height: 30 } },
-      { selector: "node.disabled", style: { opacity: 0.35 } },
-      { selector: "node.error", style: { "border-color": "#f0566a" } },
-      { selector: "node.queued", style: { "border-color": "#4f8cff", "border-style": "dashed" } },
-      { selector: "node.running", style: { "border-color": "#4f8cff", "border-width": 5, "background-color": "#24407a" } },
-      { selector: "node.done", style: { "border-color": "#3ecf8e", "border-width": 4 } },
-      { selector: "node.failed", style: { "border-color": "#f0566a", "border-width": 4, "background-color": "#5a1f2a" } },
-      { selector: "node:selected", style: { "overlay-color": "#4f8cff", "overlay-opacity": 0.15 } },
-      { selector: "edge", style: { width: 2, "line-color": "#2a2f3d", "curve-style": "bezier" } },
-      { selector: "edge.active", style: { width: 4, "line-color": "#4f8cff", "line-style": "dashed", "line-dash-pattern": [8, 4] } },
-      { selector: "edge.done", style: { "line-color": "#3ecf8e" } },
+          label: "data(label)", "font-family": "JetBrains Mono, monospace", "font-weight": 700, "font-size": 11,
+          color: C.ink, "text-wrap": "wrap", "text-valign": "bottom", "text-halign": "center", "text-margin-y": 7,
+          "text-background-color": C.paper, "text-background-opacity": 1, "text-background-padding": 3,
+          "text-border-color": C.ink, "text-border-width": 2, "text-border-opacity": 1,
+          shape: "rectangle", "background-color": C.paper, "border-width": 3, "border-color": C.ink, width: 30, height: 30 } },
+      { selector: "node[kind='orchestrator']", style: {
+          width: 92, height: 92, "background-color": C.ink, "font-size": 14, "text-valign": "center", "text-margin-y": 0,
+          color: C.yellow, "text-background-color": C.ink, "text-border-width": 0 } },
+      { selector: "node[kind='domain']", style: { width: 56, height: 56, "background-color": C.yellow, "font-size": 12 } },
+      { selector: "node[kind='domain'].empty", style: { "background-color": C.bg, "border-style": "dashed", color: "#5c5c5c" } },
+      { selector: "node[kind='server']", style: { shape: "diamond", width: 38, height: 38, "background-color": C.pink, "font-size": 10 } },
+      { selector: "node[kind='server'].disabled", style: { "background-color": C.bg, opacity: 0.5 } },
+      { selector: "node[kind='server'].error", style: { "background-color": C.red } },
+      { selector: "node[kind='tool']", style: {
+          width: 12, height: 12, "background-color": C.blue, "border-width": 2, "font-size": 9, "font-weight": 500,
+          "text-opacity": 0, "text-background-opacity": 0, "text-border-opacity": 0 } },
+      { selector: "node[kind='tool']:selected, node[kind='tool'].show-label, node[kind='tool'].running, node[kind='tool'].done, node[kind='tool'].failed", style: {
+          "text-opacity": 1, "text-background-opacity": 1, "text-border-opacity": 1, width: 16, height: 16 } },
+      { selector: "node.hidden, edge.hidden", style: { display: "none" } },
+      { selector: "node.queued", style: { "border-style": "dashed", "border-width": 4 } },
+      { selector: "node.running", style: { "background-color": C.yellow, "border-width": 6, "border-color": C.blue } },
+      { selector: "node[kind='orchestrator'].running", style: { "background-color": C.blue, color: C.paper, "text-background-color": C.blue } },
+      { selector: "node.done", style: { "background-color": C.green } },
+      { selector: "node[kind='orchestrator'].done", style: { "background-color": C.green, color: C.ink, "text-background-color": C.green } },
+      { selector: "node.failed", style: { "background-color": C.red } },
+      { selector: "node:selected", style: { "border-width": 6, "border-color": C.blue } },
+      { selector: "edge", style: { width: 3, "line-color": C.ink, "curve-style": "straight" } },
+      { selector: "edge.tool-edge", style: { width: 1.5, "line-color": "#7a7a7a" } },
+      { selector: "edge.active", style: { width: 6, "line-color": C.blue, "line-style": "dashed", "line-dash-pattern": [10, 6] } },
+      { selector: "edge.done", style: { width: 4, "line-color": C.green } },
     ],
   });
 
-  cy.on("tap", "node", (e) => { selected = e.target.id(); renderPanel(); });
-  setInterval(() => cy.edges(".active").forEach((e) => e.style("line-dash-offset", -((Date.now() / 40) % 12))), 50);
+  cy.fit(cy.elements(":visible"), 40); // fit only what is shown, not the hidden tool nodes
+  window.addEventListener("resize", () => cy.fit(cy.elements(":visible"), 40));
+
+  cy.on("tap", "node", (e) => {
+    const node = e.target;
+    selected = node.id();
+    if (node.data("kind") === "server") toggleTools(node.id().slice(2), true);
+    if (node.data("kind") === "tool") selected = `s:${node.data("server")}`; // show the tool's server in the panel
+    renderPanel();
+  });
+  cy.on("mouseover", "node[kind='tool']", (e) => e.target.addClass("show-label"));
+  cy.on("mouseout", "node[kind='tool']", (e) => e.target.removeClass("show-label"));
+  $("fit").onclick = () => cy.animate({ fit: { eles: cy.elements(":visible"), padding: 40 }, duration: 300 });
+  $("collapse").onclick = () => { [...expanded].forEach((id) => toggleTools(id, false)); cy.animate({ fit: { eles: cy.elements(":visible"), padding: 40 }, duration: 300 }); };
+  setInterval(() => cy.edges(".active").forEach((e) => e.style("line-dash-offset", -((Date.now() / 30) % 16))), 50);
+}
+
+function toggleTools(serverId, zoom) {
+  const show = !expanded.has(serverId);
+  const els = cy.elements(`[server = "${serverId}"]`);
+  if (show) { expanded.add(serverId); els.removeClass("hidden"); }
+  else { expanded.delete(serverId); els.addClass("hidden"); }
+  if (show && zoom) cy.animate({ fit: { eles: cy.getElementById(`s:${serverId}`).union(els), padding: 60 }, duration: 350 });
+}
+
+function showTool(serverId) {
+  // A tool is being called: make sure its server's tools are visible (without moving the camera).
+  if (!expanded.has(serverId)) { expanded.add(serverId); cy.elements(`[server = "${serverId}"]`).removeClass("hidden"); }
 }
 
 function setNode(id, state) {
@@ -127,7 +194,7 @@ function resetGraph() {
 // ---------- Side panel ----------
 
 function renderPanel() {
-  const p = $("panel");
+  const p = $("panel-body");
   if (!selected) return;
 
   if (selected === "orchestrator") {
@@ -165,11 +232,11 @@ function renderPanel() {
 async function renderServer(id) {
   const s = graphData.domains.flatMap((d) => d.servers).find((x) => x.id === id);
   const tools = s.tools.map((t) => `<div class="tool"><b>${esc(t.name)}</b><p>${esc(t.description)}</p></div>`).join("");
-  $("panel").innerHTML = `<h2>${esc(s.name)}</h2>
+  $("panel-body").innerHTML = `<h2>${esc(s.name)}</h2>
     <span class="badge ${s.status}">${s.status}</span> <span class="muted">${esc(s.transport)}</span>
     ${s.error ? `<pre class="muted">${esc(s.error)}</pre>` : ""}
-    <h4>Tools (${s.tools.length})</h4>${tools || '<p class="muted">No tools.</p>'}
-    <h4>Calls</h4><div id="calls"><p class="muted">Loading…</p></div>`;
+    <h4>Calls</h4><div id="calls"><p class="muted">Loading…</p></div>
+    <h4>Tools (${s.tools.length})</h4>${tools || '<p class="muted">No tools.</p>'}`;
 
   // Merge saved history (MongoDB) with calls seen live in this tab.
   let saved = [];
@@ -196,20 +263,23 @@ function renderCalls(calls) {
 
 function logEvent(ev) {
   if (ev.type === "token") return;
-  const what = {
-    "run.start": `query: ${ev.query}`,
-    plan: `plan: ${ev.steps.map((s) => s.domain).join(", ") || "answer directly"}`,
-    "domain.start": `${ev.domain} → ${ev.task}`,
-    "domain.end": `${ev.domain} ${ev.status}`,
-    "tool.start": `${ev.server} · ${ev.tool}()`,
-    "tool.end": `${ev.server} · ${ev.tool} ✓ ${ev.duration_ms} ms`,
-    "tool.error": `${ev.server} · ${ev.tool} ✗ ${ev.error}`,
-    usage: `${ev.agent} LLM call: ${ev.input_tokens} in / ${ev.output_tokens} out · ${usd(ev.cost)}`,
-    "run.end": `done · ${usd(ev.totals?.cost)} · ${tok((ev.totals?.input_tokens || 0) + (ev.totals?.output_tokens || 0))} tokens`,
-    "run.error": `error: ${ev.error}`,
-  }[ev.type] || "";
+  // Functions, so only the matching event's text is built (each event has different fields).
+  const describe = {
+    "run.start": () => `query: ${ev.query}`,
+    plan: () => `plan: ${(ev.steps || []).map((s) => s.domain).join(", ") || "answer directly"}`,
+    "domain.start": () => `${ev.domain} → ${ev.task}`,
+    "domain.end": () => `${ev.domain} ${ev.status}`,
+    "tool.start": () => `${ev.server} · ${ev.tool}()`,
+    "tool.end": () => `${ev.server} · ${ev.tool} ✓ ${ev.duration_ms} ms`,
+    "tool.error": () => `${ev.server} · ${ev.tool} ✗ ${ev.error}`,
+    usage: () => `${ev.agent} LLM call: ${ev.input_tokens} in / ${ev.output_tokens} out · ${usd(ev.cost)}`,
+    "run.end": () => `done · ${usd(ev.totals?.cost)} · ${tok((ev.totals?.input_tokens || 0) + (ev.totals?.output_tokens || 0))} tokens`,
+    "run.error": () => `error: ${ev.error}`,
+  }[ev.type];
+  const what = describe ? describe() : "";
   const li = document.createElement("li");
-  li.innerHTML = `<span class="t">${new Date(ev.ts).toLocaleTimeString()} ${esc(ev.type)}</span> ${esc(what)}`;
+  const kind = ev.type.startsWith("tool.") ? (ev.type === "tool.error" ? "lt-err" : "lt-tool") : ev.type === "usage" ? "lt-cost" : ev.type === "run.error" ? "lt-err" : "";
+  li.innerHTML = `<span class="t ${kind}">${new Date(ev.ts).toLocaleTimeString()} ${esc(ev.type)}</span> ${esc(what)}`;
   $("log").prepend(li);
 }
 
@@ -245,6 +315,8 @@ function onEvent(ev) {
     case "tool.start": {
       activeCalls[ev.server] = (activeCalls[ev.server] || 0) + 1;
       setNode(`s:${ev.server}`, "running"); setEdge(`s:${ev.server}`, "active");
+      showTool(ev.server);
+      setNode(`t:${ev.server}/${ev.tool}`, "running"); setEdge(`t:${ev.server}/${ev.tool}`, "active");
       (liveCalls[ev.server] ||= []).unshift({ ...ev, status: "running", key: null });
       break;
     }
@@ -255,6 +327,8 @@ function onEvent(ev) {
       const i = list.findIndex((c) => c.status === "running" && c.tool === ev.tool && c.run_id === ev.run_id);
       const call = { ...ev, args: i >= 0 ? list[i].args : null, status: ev.type === "tool.end" ? "done" : "error", key: `${ev.run_id}|${ev.tool}|${ev.ts}` };
       if (i >= 0) list[i] = call; else list.unshift(call);
+      setNode(`t:${ev.server}/${ev.tool}`, ev.type === "tool.end" ? "done" : "failed");
+      setEdge(`t:${ev.server}/${ev.tool}`, "done");
       if (!activeCalls[ev.server]) {
         setNode(`s:${ev.server}`, ev.type === "tool.end" ? "done" : "failed");
         setEdge(`s:${ev.server}`, "done");
@@ -290,14 +364,14 @@ function onEvent(ev) {
 
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  ws.onopen = () => { $("status-dot").className = "dot live"; $("status").textContent = "ready"; };
+  ws.onopen = () => { $("status-dot").className = "dot live"; $("status-text").textContent = "ready"; };
   ws.onmessage = (m) => onEvent(JSON.parse(m.data));
-  ws.onclose = () => { $("status-dot").className = "dot"; $("status").textContent = "reconnecting…"; setTimeout(connect, 1500); };
+  ws.onclose = () => { $("status-dot").className = "dot"; $("status-text").textContent = "reconnecting…"; setTimeout(connect, 1500); };
 }
 
 function setBusy(busy) {
   $("status-dot").className = busy ? "dot busy" : "dot live";
-  $("status").textContent = busy ? "working…" : "ready";
+  $("status-text").textContent = busy ? "working…" : "ready";
 }
 
 // ---------- Sending a query ----------
@@ -343,10 +417,10 @@ async function startMic() {
       cleanupMic();
       if (hadMic && $("query").value.trim()) submit("voice");
     };
-    socket.onerror = () => { $("status").textContent = "voice connection failed"; };
+    socket.onerror = () => { $("status-text").textContent = "voice connection failed"; };
   } catch (e) {
     cleanupMic();
-    $("status").textContent = `mic error: ${e.message}`;
+    $("status-text").textContent = `mic error: ${e.message}`;
   }
 }
 

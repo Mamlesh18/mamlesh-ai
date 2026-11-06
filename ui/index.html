@@ -4,38 +4,52 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mamlesh AI OS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
 </head>
 <body>
   <header>
-    <div class="brand"><span id="status-dot" class="dot"></span> Mamlesh AI OS</div>
+    <div class="brand">Mamlesh//OS <small>AGENTS LIVE</small></div>
     <form id="query-form">
-      <input id="query" placeholder="Ask anything, or press the mic…" autocomplete="off">
-      <button type="button" id="mic" title="Speak">🎤</button>
-      <button type="submit" id="send">Send</button>
+      <input id="query" placeholder="ASK ANYTHING — OR HIT THE MIC" autocomplete="off">
+      <button type="button" id="mic" title="Speak">🎤 Mic</button>
+      <button type="submit" id="send">Send →</button>
     </form>
-    <div id="status" class="muted">connecting…</div>
+    <div id="status"><span id="status-dot" class="dot"></span><span id="status-text">connecting…</span></div>
   </header>
 
   <main>
-    <section id="graph"></section>
-    <aside id="panel">
-      <p class="muted">Click a node to see what it is doing.</p>
+    <section class="box" id="graph-wrap">
+      <span class="tag">Agent map</span>
+      <div class="graph-tools">
+        <button type="button" id="fit">Fit</button>
+        <button type="button" id="collapse">Hide tools</button>
+      </div>
+      <div class="legend">
+        <span class="q">queued</span><span class="run">running</span><span class="ok">done</span><span class="err">error</span>
+      </div>
+      <div id="graph"></div>
+    </section>
+    <aside class="box" id="panel">
+      <span class="tag">Inspector</span>
+      <div id="panel-body"><p class="muted">Click a node. Click an MCP server to fan out its tools.</p></div>
     </aside>
   </main>
 
   <footer>
-    <section>
-      <h3>Answer</h3>
+    <section class="box">
+      <span class="tag">Answer</span>
       <div id="answer" class="muted">No query yet.</div>
     </section>
-    <section>
-      <h3>Cost &amp; tokens</h3>
+    <section class="box">
+      <span class="tag">Cost &amp; tokens</span>
       <div id="usage" class="muted">Run a query to see tokens and cost per agent.</div>
     </section>
-    <section>
-      <h3>Live events</h3>
+    <section class="box">
+      <span class="tag">Live events</span>
       <ol id="log"></ol>
     </section>
   </footer>
