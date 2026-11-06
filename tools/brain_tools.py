@@ -3,12 +3,14 @@
 Source of truth = text files:
   kb/*.md, kb/*.txt      - your knowledge files (e.g. kb/memories.md). kb_add appends to kb/notes.md
   /etc/secrets/*.md      - same, on Render (uploaded as Secret Files, since kb/ is not in git)
+  MongoDB kb_files       - backup of kb/ files; missing files are downloaded on startup (services/kb_store.py)
   memory/*.md            - daily notes written by the Personal agent
 
 Built from those files (rebuilt automatically when any file changes):
   data/kb.faiss          - FAISS vector index
   data/kb.json           - the text chunks + a fingerprint of the source files
 """
+import asyncio
 import hashlib
 import json
 import re
@@ -132,11 +134,14 @@ def kb_search(query: str, k: int = 5) -> str:
 
 
 @tool
-def kb_add(text: str) -> str:
+async def kb_add(text: str) -> str:
     """Save a new fact or note about Mamlesh into the knowledge base (kb/notes.md)."""
+    from services import kb_store
+
     if not NOTES_FILE.exists():
         NOTES_FILE.write_text("# Notes\n", encoding="utf-8")
     with NOTES_FILE.open("a", encoding="utf-8") as f:
         f.write(f"\n## {datetime.now():%Y-%m-%d %H:%M}\n{text.strip()}\n")
-    sync()
-    return "Saved to kb/notes.md and re-indexed."
+    await kb_store.push(NOTES_FILE)  # keep a copy in MongoDB so it survives redeploys
+    await asyncio.to_thread(sync)
+    return "Saved to kb/notes.md (and MongoDB) and re-indexed."

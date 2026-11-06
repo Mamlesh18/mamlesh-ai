@@ -20,7 +20,10 @@ async def startup():
     from services import events
     from tools import brain_tools
 
+    from services import kb_store
+
     events.main_loop = asyncio.get_running_loop()
+    await kb_store.pull_missing()  # e.g. on Render, where kb/ is not in git
     await asyncio.to_thread(brain_tools.sync)  # build/load the FAISS index from kb/ and memory/
     system["mcp"] = await load_mcp_tools()
     agents, system["tool_owner"], system["context"] = build_domain_agents(system["mcp"])
