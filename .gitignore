@@ -224,3 +224,5 @@ data/
 # personal knowledge + daily notes (private: never commit)
 kb/
 memory/
+# financial statements (private: never commit)
+cams/

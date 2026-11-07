@@ -1,11 +1,11 @@
 """All HTTP and WebSocket endpoints. The logic lives in services/."""
 import html
 
-from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from services import auth, events, run_service, stt
+from services import auth, events, run_service, statements, stt
 
 router = APIRouter()
 
@@ -85,6 +85,34 @@ async def get_run_events(run_id: str):
 @router.get("/api/mcp/{domain}/{server}/calls")
 async def get_tool_calls(domain: str, server: str):
     return await events.tool_calls(f"{domain}/{server}")
+
+
+@router.get("/api/finance/portfolio")
+async def get_portfolio():
+    """The latest imported consolidated account statement (or null)."""
+    s = await statements.get_statement()
+    if s:
+        s.pop("_id", None)
+    return s
+
+
+@router.post("/api/finance/statement")
+async def upload_statement(file: UploadFile = File(...), password: str = Form("")):
+    """Upload a CAS PDF: extract the key facts and replace the stored statement."""
+    data = await file.read()
+    if not data.startswith(b"%PDF"):
+        raise HTTPException(400, "Please upload a PDF file.")
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(400, "The PDF is larger than 15 MB.")
+    try:
+        doc = await statements.import_statement(data, file.filename or "statement.pdf", password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Could not read the statement: {e}")
+    await events.emit("system", "portfolio.updated", total_value=doc["total_value"], as_on=doc["period_to"])
+    return {"total_value": doc["total_value"], "as_on": doc["period_to"], "mf_folios": len(doc["mf_folios"]),
+            "demat_holdings": len(doc["demat_holdings"]), "warnings": doc["warnings"]}
 
 
 @router.post("/api/mcp/{domain}/{server}/auth/start")

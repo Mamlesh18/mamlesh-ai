@@ -139,3 +139,25 @@ table.usage tr.total td { background: var(--pink); font-weight: 700; }
 .auth-card p { margin: 6px 0 10px; }
 .auth-card button { width: 100%; background: var(--ink); color: var(--yellow); }
 .badge.auth_required { background: #ff8a00; }
+
+/* ---------- Portfolio (finance agent) ---------- */
+.up { color: #008a4a; } .down { color: var(--red); }
+.alloc { display: flex; height: 22px; border: 2px solid var(--ink); margin: 4px 0 6px; }
+.alloc .seg { display: block; height: 100%; } .alloc .seg + .seg { border-left: 2px solid var(--ink); }
+.seg0 { background: var(--blue); } .seg1 { background: var(--yellow); } .seg2 { background: var(--pink); } .seg3 { background: var(--green); }
+.alloc-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 700 10px var(--mono); text-transform: uppercase; }
+.alloc-legend i { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--ink); margin-right: 4px; vertical-align: -1px; }
+.bars { display: flex; align-items: flex-end; gap: 4px; height: 80px; border-bottom: 3px solid var(--ink); }
+.bars span { flex: 1; background: var(--ink); min-width: 6px; }
+.bars span:last-child { background: var(--blue); }
+.bars span:hover { background: var(--pink); }
+.bars-axis { display: flex; justify-content: space-between; font: 700 10px var(--mono); margin-top: 3px; }
+table.pf td { font-size: 11px; } table.pf td:first-child { font-weight: 500; white-space: normal; }
+table.pf small { display: block; color: var(--muted); font-size: 9px; text-transform: uppercase; }
+ul.tx { margin: 0; padding-left: 16px; font-size: 12px; } ul.tx li { margin: 3px 0; }
+.warn-box { border: 2px solid var(--ink); background: #ff8a00; padding: 6px 8px; font: 700 11px var(--mono); margin: 6px 0; }
+form.upload { display: grid; gap: 8px; margin-top: 16px; padding: 12px; border: 3px dashed var(--ink); background: var(--bg); }
+form.upload p { margin: 0; font-size: 12px; }
+form.upload input { padding: 8px; border: 2px solid var(--ink); background: var(--paper); font: 500 12px var(--mono); }
+form.upload button { background: var(--ink); color: var(--yellow); }
+form.upload button:disabled { opacity: .6; cursor: wait; }

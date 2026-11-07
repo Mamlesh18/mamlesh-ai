@@ -132,6 +132,92 @@ async function reloadGraph() {
   if (selected) renderPanel();
 }
 
+// ---------- Portfolio (from the uploaded CAS statement) ----------
+
+let portfolio;   // cached; undefined = not loaded yet, null = no statement uploaded
+const inr = (v) => `₹${Number(v || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+const pct = (v) => (v == null ? "–" : `${v > 0 ? "+" : ""}${Number(v).toFixed(2)}%`);
+const tone = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
+
+async function renderPortfolio(reload = false) {
+  const el = $("portfolio");
+  if (!el) return;
+  if (portfolio === undefined || reload) {
+    const r = await fetch("/api/finance/portfolio");
+    if (r.status === 401) return toLogin();
+    portfolio = await r.json();
+  }
+  if (!$("portfolio")) return; // panel changed while loading
+  const s = portfolio;
+  const upload = `
+    <form class="upload" id="cas-form">
+      <b>Upload a new statement</b>
+      <p class="muted">CAS PDF from CDSL, NSDL, CAMS or KFintech. It replaces the current one; the PDF itself is not stored.</p>
+      <input type="file" id="cas-file" accept="application/pdf" required>
+      <input type="password" id="cas-password" placeholder="PDF password (usually your PAN), if locked" autocomplete="off">
+      <button type="submit" id="cas-submit">Upload &amp; extract →</button>
+      <div id="cas-status" class="muted"></div>
+    </form>`;
+  if (!s) {
+    el.innerHTML = `<h4>My portfolio</h4><p class="muted">No statement uploaded yet.</p>${upload}`;
+  } else {
+    const alloc = s.asset_allocation.map((a, i) =>
+      `<span style="width:${a.percent}%" class="seg seg${i}" title="${esc(a.asset_class)}: ${inr(a.value)} (${a.percent}%)"></span>`).join("");
+    const legend = s.asset_allocation.map((a, i) => `<span><i class="seg${i}"></i>${esc(a.asset_class)} ${a.percent}%</span>`).join("");
+    const max = Math.max(...s.monthly_values.map((m) => m.value), 1);
+    const bars = s.monthly_values.map((m) =>
+      `<span title="${m.month}: ${inr(m.value)}" style="height:${Math.max(4, (m.value / max) * 100)}%"></span>`).join("");
+    const mf = s.mf_folios.slice().sort((a, b) => b.value - a.value).map((f) => `
+      <tr><td title="${esc(f.scheme)} · folio ${esc(f.folio)} · ${esc(f.plan)}">${esc(f.scheme.replace(/ - (Regular|Direct) Plan.*$| Regular Plan.*$| - Growth.*$/i, ""))}
+        <small>${esc(f.plan)}</small></td><td>${inr(f.invested)}</td><td>${inr(f.value)}</td><td class="${tone(f.gain_percent)}">${pct(f.gain_percent)}</td></tr>`).join("");
+    const demat = s.demat_holdings.slice().sort((a, b) => b.value - a.value).map((h) => `
+      <tr><td title="${esc(h.isin)} · ${esc(h.broker)}">${esc(h.name)} <small>${esc(h.kind.replace("_", " "))}</small></td>
+        <td>${h.quantity}</td><td>${inr(h.price)}</td><td>${inr(h.value)}</td></tr>`).join("");
+    const tx = s.transactions.map((t) => `<li><b>${esc(t.date)}</b> ${esc(t.name)} · ${esc(t.description.split(" ").slice(0, 3).join(" "))} · ${inr(t.amount)}</li>`).join("");
+    el.innerHTML = `
+      <h4>My portfolio</h4>
+      <p class="muted">${esc(s.source)} statement · values as on <b>${esc(s.period_to)}</b> · uploaded ${new Date(s.uploaded_at).toLocaleDateString()}</p>
+      ${s.warnings?.length ? `<div class="warn-box">⚠ ${s.warnings.map(esc).join("<br>⚠ ")}</div>` : ""}
+      <div class="stats">
+        <div class="stat"><b>${inr(s.total_value)}</b><span>total value</span></div>
+        <div class="stat"><b class="${tone(s.mf_summary.gain)}">${pct(s.mf_summary.gain_percent)}</b><span>MF gain · ${inr(s.mf_summary.gain)}</span></div>
+      </div>
+      <div class="alloc">${alloc}</div><div class="alloc-legend">${legend}</div>
+      <h4>Value by month</h4><div class="bars">${bars}</div>
+      <div class="bars-axis"><span>${esc(s.monthly_values[0]?.month || "")}</span><span>${esc(s.monthly_values.at(-1)?.month || "")}</span></div>
+      <h4>Mutual fund folios (${s.mf_folios.length})</h4>
+      <table class="usage pf"><tr><th>scheme</th><th>invested</th><th>value</th><th>gain</th></tr>${mf}
+        <tr class="total"><td>total</td><td>${inr(s.mf_summary.invested)}</td><td>${inr(s.mf_summary.value)}</td><td>${pct(s.mf_summary.gain_percent)}</td></tr></table>
+      <h4>Demat holdings (${s.demat_holdings.length})</h4>
+      <table class="usage pf"><tr><th>name</th><th>qty</th><th>price</th><th>value</th></tr>${demat}</table>
+      ${tx ? `<h4>Transactions this period</h4><ul class="tx">${tx}</ul>` : ""}
+      ${upload}`;
+  }
+  $("cas-form").onsubmit = uploadStatement;
+}
+
+async function uploadStatement(e) {
+  e.preventDefault();
+  const file = $("cas-file").files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  form.append("password", $("cas-password").value);
+  $("cas-submit").disabled = true;
+  $("cas-status").textContent = "Reading the PDF and extracting your holdings… (about 20–40 s)";
+  try {
+    const r = await fetch("/api/finance/statement", { method: "POST", body: form });
+    if (r.status === 401) return toLogin();
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Upload failed");
+    $("cas-status").textContent = `Done: ${inr(data.total_value)} as on ${data.as_on}${data.warnings.length ? ` · ${data.warnings.length} warning(s)` : ""}`;
+    await renderPortfolio(true);
+  } catch (err) {
+    $("cas-status").textContent = `✗ ${err.message}`;
+    $("cas-submit").disabled = false;
+  }
+}
+
 // ---------- MCP login (OAuth) ----------
 
 // A "⚠ LOG IN" button pinned under every server node that needs a login.
@@ -280,9 +366,11 @@ function renderPanel() {
     p.innerHTML = `<h2>${esc(name)} agent</h2><p class="muted">${esc(d.description)}</p>
       <h4>In this run</h4>${r ? `<span class="badge ${r.status}">${r.status}</span>
         <p><b>Task:</b> ${esc(r.task)}</p>${r.result ? `<p><b>Result:</b> ${esc(r.result)}</p>` : ""}` : '<p class="muted">Not used in this run.</p>'}
+      ${name === "finance" ? '<div id="portfolio"><p class="muted">Loading portfolio…</p></div>' : ""}
       ${usageHtml(name)}
       ${contextHtml(d.context)}
       <h4>MCP servers / tools</h4>${servers || '<p class="muted">No tools configured yet. Add MCP servers in mcp_servers/config.py.</p>'}`;
+    if (name === "finance") renderPortfolio();
     return;
   }
 
@@ -343,6 +431,7 @@ function logEvent(ev) {
     "run.end": () => `done · ${usd(ev.totals?.cost)} · ${tok((ev.totals?.input_tokens || 0) + (ev.totals?.output_tokens || 0))} tokens`,
     "run.error": () => `error: ${ev.error}`,
     "mcp.status": () => `${ev.server} → ${ev.status.replace("_", " ")}`,
+    "portfolio.updated": () => `new statement: ₹${Number(ev.total_value).toLocaleString("en-IN")} as on ${ev.as_on}`,
   }[ev.type];
   const what = describe ? describe() : "";
   const li = document.createElement("li");
@@ -352,6 +441,12 @@ function logEvent(ev) {
 }
 
 function onEvent(ev) {
+  if (ev.type === "portfolio.updated") {
+    logEvent(ev);
+    portfolio = undefined; // reload next time the finance panel is shown
+    if (selected === "d:finance") renderPortfolio(true);
+    return;
+  }
   if (ev.type === "mcp.status") {
     // An MCP server logged in, or its login expired: redraw the map with its new tools / LOG IN button.
     logEvent(ev);

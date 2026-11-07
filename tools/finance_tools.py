@@ -31,6 +31,32 @@ def _nav_on_or_before(history: list[dict], days_ago: int):
 
 
 @tool
+async def my_portfolio(section: str = "summary") -> str:
+    """Mamlesh's own consolidated portfolio from the latest uploaded CAS statement (CDSL/NSDL/CAMS): demat stocks,
+    ETFs, mutual fund folios with invested amount, value and gain, monthly value history and transactions.
+    section: 'summary' (totals + allocation), 'mutual_funds', 'stocks' (demat holdings), 'history', 'transactions' or 'all'."""
+    from services.statements import get_statement
+
+    s = await get_statement()
+    if not s:
+        return "No statement uploaded yet. Mamlesh can upload a CAS PDF in the Finance agent panel."
+    head = {"statement": f"{s['source']} CAS for {s['period_from']} to {s['period_to']}", "values_as_on": s["period_to"],
+            "uploaded_at": s["uploaded_at"]}
+    parts = {
+        "summary": {"total_value": s["total_value"], "asset_allocation": s["asset_allocation"], "accounts": s["accounts"],
+                    "mutual_fund_totals": s["mf_summary"]},
+        "mutual_funds": {"folios": s["mf_folios"], "totals": s["mf_summary"]},
+        "stocks": {"demat_holdings": s["demat_holdings"]},
+        "history": {"monthly_values": s["monthly_values"]},
+        "transactions": {"transactions": s["transactions"]},
+    }
+    body = {k: v for p in parts.values() for k, v in p.items()} if section == "all" else parts.get(section, parts["summary"])
+    if s.get("warnings"):
+        head["extraction_warnings"] = s["warnings"]
+    return json.dumps({**head, **body}, default=str)
+
+
+@tool
 async def mf_search(query: str) -> str:
     """Search Indian mutual funds by name. Returns scheme codes to use with mf_details."""
     results = await _get(f"{MF_API}/search", q=query)
