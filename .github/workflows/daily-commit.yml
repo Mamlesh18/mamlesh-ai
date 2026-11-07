@@ -4,7 +4,10 @@ name: Daily commit
 
 on:
   schedule:
-    - cron: "30 2 * * *"   # 02:30 UTC = 08:00 IST, every day (GitHub may start it a few minutes late)
+    # GitHub runs scheduled jobs "best effort": they can be late or skipped when GitHub is busy.
+    # Off-peak minutes plus a backup run make a missed day very unlikely (the job skips if today is already logged).
+    - cron: "17 2 * * *"    # 02:17 UTC = 07:47 IST (morning run)
+    - cron: "43 10 * * *"   # 10:43 UTC = 16:13 IST (backup, only commits if the morning run was missed)
   workflow_dispatch:        # lets you run it by hand from the Actions tab
 
 permissions:
