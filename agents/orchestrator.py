@@ -131,7 +131,7 @@ def build_orchestrator(agents: dict, tool_owner: dict):
             now = datetime.now().strftime("%A, %Y-%m-%d %H:%M")
             out = await agents[name].ainvoke(
                 {"messages": [("user", f"(Current date and time: {now})\n\n{task}")]},
-                config={**events(config, name), "recursion_limit": 25},
+                config={**events(config, name), "recursion_limit": 25, "configurable": {"run_id": run_id}},
             )
             result, status = out["messages"][-1].content, "done"
         except Exception as e:

@@ -31,6 +31,13 @@ AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")  # signs the login cookie; if missing, a random one is used
 SESSION_DAYS = int(os.getenv("SESSION_DAYS", "7"))
 
+# Gmail sending (Conversation agent). App password from myaccount.google.com/apppasswords (needs 2-Step Verification).
+# Accept both EMAIL and email: Windows env names are case-insensitive, Linux (Render) is not.
+GMAIL_ADDRESS = (os.getenv("EMAIL") or os.getenv("email") or "").strip()
+GMAIL_APP_PASSWORD = (os.getenv("APP_PASSWORD") or "").replace(" ", "").strip()  # Google shows it with spaces
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Mamlesh")
+EMAIL_SENDS_PER_DAY = int(os.getenv("EMAIL_SENDS_PER_DAY", "30"))
+
 # Your time zone as minutes from UTC (India = +330), used for "today" in the health log
 UTC_OFFSET_MINUTES = int(os.getenv("UTC_OFFSET_MINUTES", "330"))
 

@@ -5,7 +5,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, Response, Upl
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from services import auth, events, run_service, statements, stt
+from services import auth, events, mailer, run_service, statements, stt
 
 router = APIRouter()
 
@@ -105,6 +105,35 @@ async def get_run_events(run_id: str):
 @router.get("/api/mcp/{domain}/{server}/calls")
 async def get_tool_calls(domain: str, server: str):
     return await events.tool_calls(f"{domain}/{server}")
+
+
+class SendDraftRequest(BaseModel):
+    to: str
+    subject: str
+    body: str
+
+
+@router.post("/api/email/drafts/{draft_id}/send")
+async def send_email_draft(draft_id: str, body: SendDraftRequest):
+    """Send a draft the agent prepared. Only the person clicking Send in the chat can do this."""
+    try:
+        d = await mailer.send_draft(draft_id, body.to, body.subject, body.body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    if d["status"] != "sent":
+        raise HTTPException(502, f"Gmail did not accept it: {d['error']}")
+    return {"status": "sent", "to": d["to"], "sent_at": d["sent_at"]}
+
+
+@router.post("/api/email/drafts/{draft_id}/discard")
+async def discard_email_draft(draft_id: str):
+    try:
+        await mailer.discard_draft(draft_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"status": "discarded"}
 
 
 @router.get("/api/healthcare")

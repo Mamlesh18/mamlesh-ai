@@ -216,3 +216,17 @@ form.upload button { background: var(--ink); color: var(--yellow); }
 .wchart rect { fill: var(--yellow); stroke: var(--ink); stroke-width: 2; }
 .wchart .target { stroke: var(--green); stroke-width: 2; stroke-dasharray: 6 4; }
 .wchart text { font: 700 10px var(--mono); fill: var(--muted); }
+
+/* ---------- Email drafts in the chat ---------- */
+.drafts:empty { display: none; }
+.draft { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 3px solid var(--ink); background: #fff7cc; box-shadow: 3px 3px 0 var(--ink); }
+.draft.sent { background: #dcf7e9; } .draft.discarded { background: var(--bg); }
+.draft-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.draft-head b { font: 700 13px var(--mono); text-transform: uppercase; }
+.draft label { display: grid; gap: 3px; font: 700 10px var(--mono); text-transform: uppercase; }
+.draft input, .draft textarea { padding: 7px 8px; border: 2px solid var(--ink); background: var(--paper); font: 500 13px var(--sans); color: var(--ink); resize: vertical; }
+.draft input:focus, .draft textarea:focus { outline: none; box-shadow: 3px 3px 0 var(--blue); }
+.draft-actions { display: flex; gap: 8px; }
+.draft-actions .send { background: var(--blue); color: #fff; }
+.draft p { margin: 0; font-size: 13px; }
+.draft pre { white-space: pre-wrap; font: 12px/1.5 var(--sans); margin: 6px 0 0; }

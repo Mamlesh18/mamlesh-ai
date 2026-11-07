@@ -276,9 +276,10 @@ function renderMessages() {
     box.querySelectorAll(".chips button").forEach((b) => (b.onclick = () => sendMessage(b.dataset.q)));
     return;
   }
-  box.innerHTML = messages.map((rid) => `<div class="msg user">${esc(runs[rid].query)}</div><div class="msg bot" id="m-${rid}"></div>`).join("")
+  box.innerHTML = messages.map((rid) => `<div class="msg user">${esc(runs[rid].query)}</div>
+      <div class="msg bot" id="m-${rid}"><div class="bot-main"></div><div class="drafts"></div></div>`).join("")
     + (pendingQuery ? `<div class="msg user">${esc(pendingQuery)}</div><div class="msg bot"><div class="answer"><span class="thinking">sending…</span></div></div>` : "");
-  messages.forEach(renderBot);
+  messages.forEach((rid) => { renderBot(rid); renderDrafts(rid); });
   box.scrollTop = box.scrollHeight;
 }
 
@@ -297,7 +298,8 @@ function renderBot(rid) {
   const running = r.status === "running";
   const lastStep = running && r.events?.length ? describeEvent(r.events[r.events.length - 1]) : "planning…";
   el.className = `msg bot${r.status === "error" ? " error" : ""}`;
-  el.innerHTML = `
+  // Only the answer part is redrawn (on every streamed word); email drafts live in their own box so edits survive.
+  el.querySelector(".bot-main").innerHTML = `
     <div class="answer">${r.answer ? formatAnswer(r.answer) : running ? `<span class="thinking">${esc(lastStep)}</span>` : r.status === "error" ? esc(r.error || "Something went wrong.") : ""}</div>
     <div class="meta">
       <span class="figs">${t.calls ? `${usd(t.cost)} · ${tok((t.input_tokens || 0) + (t.output_tokens || 0))} tok` : running ? "working…" : ""}${t.duration_ms ? ` · ${secs(t.duration_ms)}` : ""}</span>
@@ -308,6 +310,62 @@ function renderBot(rid) {
     ${r.open.cost ? `<div class="detail">${usageTable(r.usage, r.totals)}</div>` : ""}`;
   el.querySelectorAll(".meta button").forEach((b) => (b.onclick = () => toggleDetail(rid, b.dataset.k)));
   if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+// ---------- Email drafts: the agent prepares, Mamlesh reviews, edits and sends ----------
+
+function renderDrafts(rid) {
+  const box = $(`m-${rid}`)?.querySelector(".drafts");
+  const r = runs[rid];
+  if (!box || !r) return;
+  box.innerHTML = (r.drafts || []).map((d) => {
+    if (d.status === "sent") {
+      return `<div class="draft sent" id="dr-${esc(d._id)}"><div class="draft-head"><b>✉ Email sent</b><span class="badge done">sent</span></div>
+        <p><b>To:</b> ${esc(d.to)}<br><b>Subject:</b> ${esc(d.subject)}</p>
+        <details><summary>message</summary><pre>${esc(d.body)}</pre></details>
+        <p class="muted">${d.sent_at ? new Date(d.sent_at).toLocaleString() : ""}</p></div>`;
+    }
+    if (d.status === "discarded") {
+      return `<div class="draft discarded"><div class="draft-head"><b>✉ Draft discarded</b><span class="badge disabled">discarded</span></div>
+        <p class="muted">To ${esc(d.to)} · ${esc(d.subject)}</p></div>`;
+    }
+    return `<form class="draft" id="dr-${esc(d._id)}" data-id="${esc(d._id)}">
+      <div class="draft-head"><b>✉ Email draft</b><span class="badge auth_required">${d.status === "failed" ? "failed - edit &amp; retry" : "waiting for you"}</span></div>
+      <label>To<input name="to" value="${esc(d.to)}" autocomplete="off"></label>
+      <label>Subject<input name="subject" value="${esc(d.subject)}" autocomplete="off"></label>
+      <label>Message<textarea name="body" rows="8">${esc(d.body)}</textarea></label>
+      ${d.error ? `<div class="warn-box">${esc(d.error)}</div>` : ""}
+      <div class="draft-actions"><button type="submit" class="send">Send email →</button><button type="button" class="discard">Discard</button></div>
+      <p class="muted draft-note">Nothing is sent until you click Send.</p>
+    </form>`;
+  }).join("");
+  box.querySelectorAll("form.draft").forEach((f) => {
+    f.onsubmit = (e) => { e.preventDefault(); sendDraft(rid, f); };
+    f.querySelector(".discard").onclick = () => discardDraft(rid, f.dataset.id);
+  });
+}
+
+async function sendDraft(rid, form) {
+  const id = form.dataset.id;
+  const f = form.elements;
+  const fields = { to: f.namedItem("to").value, subject: f.namedItem("subject").value, body: f.namedItem("body").value };
+  form.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  form.querySelector(".draft-note").textContent = "Sending…";
+  const r = await fetch(`/api/email/drafts/${id}/send`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
+  if (r.status === 401) return toLogin();
+  const data = await r.json();
+  const d = runs[rid].drafts.find((x) => x._id === id);
+  if (r.ok) Object.assign(d, fields, { status: "sent", sent_at: data.sent_at, error: null });
+  else Object.assign(d, fields, { status: "failed", error: data.detail || "Sending failed." });
+  renderDrafts(rid);
+}
+
+async function discardDraft(rid, id) {
+  const r = await fetch(`/api/email/drafts/${id}/discard`, { method: "POST" });
+  if (r.status === 401) return toLogin();
+  const d = runs[rid].drafts.find((x) => x._id === id);
+  if (r.ok) d.status = "discarded";
+  renderDrafts(rid);
 }
 
 async function toggleDetail(rid, kind) {
@@ -388,7 +446,8 @@ async function loadChat(id) {
     const chat = await r.json();
     for (const m of chat.messages) {
       runs[m.run_id] ||= { query: m.query, answer: m.answer, status: m.status, usage: m.usage || {}, totals: m.totals,
-                           events: null, open: { events: false, cost: false }, error: m.status === "error" ? "This query failed." : "" };
+                           events: null, open: { events: false, cost: false }, error: m.status === "error" ? "This query failed." : "",
+                           drafts: m.drafts || [] };
       messages.push(m.run_id);
     }
     if (!chat.messages.length) { chatId = null; store.set("chatId", null); }
@@ -653,6 +712,7 @@ function describeEvent(ev) {
     "run.end": () => `done · ${usd(ev.totals?.cost)} · ${tok((ev.totals?.input_tokens || 0) + (ev.totals?.output_tokens || 0))} tokens`,
     "run.error": () => `error: ${ev.error}`,
     "mcp.status": () => `${ev.server} → ${ev.status.replace("_", " ")}`,
+    "email.draft": () => `email draft ready for ${ev.draft?.to} (not sent)`,
     "portfolio.updated": () => `new statement: ₹${Number(ev.total_value).toLocaleString("en-IN")} as on ${ev.as_on}`,
   }[ev.type];
   return d ? d() : "";
@@ -684,6 +744,7 @@ function onEvent(ev) {
   }
   const r = runs[ev.run_id];
   if (r) {
+    if (ev.type === "email.draft") { (r.drafts ||= []).push(ev.draft); renderDrafts(ev.run_id); }
     if (ev.type === "token") r.answer += ev.text;
     else {
       r.events?.push(ev);

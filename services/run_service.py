@@ -202,9 +202,14 @@ async def get_chat(chat_id: str) -> dict:
     """A chat with all its messages (each message = one run: question, answer, tokens and cost)."""
     if database.db is None:
         return {"chat_id": chat_id, "title": "Chat", "messages": []}
+    from services import mailer
+
     chat = await database.db.chats.find_one({"_id": chat_id}) or {}
-    runs = await database.db.runs.find({"chat_id": chat_id}).sort("started_at", 1).to_list(500)
-    return {"chat_id": chat_id, "title": chat.get("title", "New chat"), "messages": [_run_out(r) for r in runs]}
+    runs = [_run_out(r) for r in await database.db.runs.find({"chat_id": chat_id}).sort("started_at", 1).to_list(500)]
+    drafts = await mailer.drafts_for_runs([r["run_id"] for r in runs])
+    for r in runs:
+        r["drafts"] = [d for d in drafts if d["run_id"] == r["run_id"]]
+    return {"chat_id": chat_id, "title": chat.get("title", "New chat"), "messages": runs}
 
 
 async def run_events(run_id: str) -> list[dict]:

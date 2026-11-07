@@ -13,7 +13,7 @@ from utils.env import MEMORY_DIR, OPENAI_MODEL, ROOT_DIR
 
 DOMAINS = {
     "coding": "GitHub (repos, issues, PRs, commits), draw.io diagrams, and files in the mamlesh-ai project folder.",
-    "conversation": "Email, Microsoft Teams and Slack: read, search, summarise and draft messages.",
+    "conversation": "Email from Mamlesh's Gmail: write and draft emails (Mamlesh reviews and sends them from the chat), and check which emails were sent.",
     "personal": "Mamlesh's own platform (profile, blogs, papers, talks, students, leads, site analytics, WhatsApp batches), Razorpay payments, and writing/reading daily notes in the memory folder.",
     "general": "Live web search and reading web pages (Tavily), current date/time, and maths.",
     "healthcare": "Mamlesh's personal health log and goals: weight and weight goal, steps, sleep, workouts, meals, water, blood pressure, symptoms, medication. Save new data and report progress.",
