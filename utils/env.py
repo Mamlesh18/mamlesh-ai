@@ -31,6 +31,9 @@ AUTH_PASSWORD = os.getenv("AUTH_PASSWORD", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")  # signs the login cookie; if missing, a random one is used
 SESSION_DAYS = int(os.getenv("SESSION_DAYS", "7"))
 
+# Your time zone as minutes from UTC (India = +330), used for "today" in the health log
+UTC_OFFSET_MINUTES = int(os.getenv("UTC_OFFSET_MINUTES", "330"))
+
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
 

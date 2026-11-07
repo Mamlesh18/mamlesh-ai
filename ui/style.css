@@ -203,3 +203,16 @@ form.upload button { background: var(--ink); color: var(--yellow); }
   .legend .hint { display: none; }
   .brand-tag { font-size: 16px; }
 }
+
+/* ---------- Health (healthcare agent) ---------- */
+.goal { border: 3px solid var(--ink); padding: 10px; margin: 6px 0 12px; background: var(--paper); box-shadow: 4px 4px 0 var(--ink); }
+.goal > b { font: 700 13px var(--mono); text-transform: uppercase; }
+.goal p { margin: 6px 0 0; font-size: 12px; }
+.progress { position: relative; height: 24px; border: 2px solid var(--ink); background: var(--bg); }
+.progress span { display: block; height: 100%; background: var(--green); border-right: 2px solid var(--ink); }
+.progress em { position: absolute; inset: 0; display: grid; place-items: center; font: 700 11px var(--mono); font-style: normal; }
+.wchart { width: 100%; height: auto; border: 2px solid var(--ink); background: var(--paper); }
+.wchart .wline { fill: none; stroke: var(--ink); stroke-width: 3; }
+.wchart rect { fill: var(--yellow); stroke: var(--ink); stroke-width: 2; }
+.wchart .target { stroke: var(--green); stroke-width: 2; stroke-dasharray: 6 4; }
+.wchart text { font: 700 10px var(--mono); fill: var(--muted); }

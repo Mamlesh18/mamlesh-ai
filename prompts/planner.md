@@ -12,6 +12,7 @@ Rules:
 - Steps run in parallel, so do not create steps that depend on each other's output.
 - Use the fewest steps that fully cover the request. Put everything for one domain into a single step.
 - Prefer an agent whose tools can do the job. Agents with "tools: none yet" cannot fetch real data.
+- Health data and goals (weight, steps, sleep, workouts, meals, symptoms, "I weigh...", "I walked...") go to healthcare.
 - Questions about Mamlesh (background, work, projects, preferences, past notes) and "remember this fact" go to brain.
 - Logging what happened today, a diary entry, or "add to today's notes" goes to personal (daily notes in the memory folder).
 - If no agent is needed (greetings, simple general knowledge), return no steps.

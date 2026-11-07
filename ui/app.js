@@ -169,10 +169,6 @@ function setEdge(target, state) {
   if (state) e.addClass(state);
 }
 
-function setUsageLabel(agent, u) {
-  const n = cy?.getElementById(agent === "orchestrator" ? "orchestrator" : `d:${agent}`);
-  if (n?.length) n.data("label", `${agent === "orchestrator" ? "ORCHESTRATOR" : n.data("base")}\n${usd(u.cost)} · ${tok(u.input_tokens + u.output_tokens)} tok`);
-}
 
 function resetGraph() {
   if (!cy) return;
@@ -441,23 +437,69 @@ function renderPanel() {
       <h4>Latest query</h4>${r ? `<span class="badge ${r.status}">${r.status}</span>
         <p><b>Task:</b> ${esc(r.task)}</p>${r.result ? `<p><b>Result:</b> ${esc(r.result)}</p>` : ""}` : '<p class="muted">Not used in the latest query.</p>'}
       ${name === "finance" ? '<div id="portfolio"><p class="muted">Loading portfolio…</p></div>' : ""}
-      ${usageHtml(name)}
+      ${name === "healthcare" ? '<div id="health"><p class="muted">Loading health data…</p></div>' : ""}
       ${contextHtml(d.context)}
       <h4>MCP servers / tools</h4>${servers || '<p class="muted">No tools configured yet. Add MCP servers in mcp_servers/config.py.</p>'}`;
     if (name === "finance") renderPortfolio();
+    if (name === "healthcare") renderHealth();
     return;
   }
   if (selected.startsWith("s:")) renderServer(selected.slice(2));
 }
 
-function usageHtml(agent) {
-  const u = graphRun?.usage?.[agent];
-  if (!u) return "";
-  return `<h4>Tokens &amp; cost in the latest query</h4>
-    <div class="stats">
-      <div class="stat"><b>${usd(u.cost)}</b><span>cost · ${u.calls} LLM calls</span></div>
-      <div class="stat"><b>${tok(u.input_tokens)} / ${tok(u.output_tokens)}</b><span>in / out tokens (${tok(u.cached_tokens)} cached)</span></div>
-    </div>`;
+// ---------- Health (custom healthcare tools, data in MongoDB) ----------
+
+async function renderHealth() {
+  const r = await fetch("/api/healthcare?days=90");
+  if (r.status === 401) return toLogin();
+  const el = $("health");
+  if (!el) return;
+  if (!r.ok) { el.innerHTML = `<p class="muted">${esc((await r.json()).detail || "Could not load health data.")}</p>`; return; }
+  const h = await r.json();
+  const num = (v) => (v == null ? "–" : Number(v).toLocaleString("en-IN", { maximumFractionDigits: 1 }));
+  const goals = h.goals.map((g) => {
+    const pctDone = Math.max(0, Math.min(100, g.percent_done || 0));
+    return `
+      <div class="goal">
+        <b>${esc(g.metric)} goal: ${num(g.start)} → ${num(g.target)} ${esc(g.unit)}</b>
+        <div class="stats">
+          <div class="stat"><b>${num(g.current)} ${esc(g.unit)}</b><span>now</span></div>
+          <div class="stat"><b>${num(Math.abs(g.remaining))} ${esc(g.unit)}</b><span>${g.remaining > 0 === g.target < g.start ? "to go" : "past target"}</span></div>
+        </div>
+        <div class="progress"><span style="width:${pctDone}%"></span><em>${num(g.percent_done)}% done</em></div>
+        <p class="muted">${g.rate_per_week_last_30_days != null ? `Pace: ${num(g.rate_per_week_last_30_days)} ${esc(g.unit)}/week` : "Log a few more days to see your pace"}${g.estimated_finish ? ` · on track for ${esc(g.estimated_finish)}` : ""}${g.needed_per_week_to_hit_deadline != null ? ` · need ${num(g.needed_per_week_to_hit_deadline)}/week for ${esc(g.deadline)}` : ""}</p>
+      </div>`;
+  }).join("");
+  const goalW = h.goals.find((g) => g.metric === "weight");
+  const latest = Object.values(h.latest_by_type).map((e) => `
+    <tr><td>${esc(e.type.replace("_", " "))}</td><td>${e.value != null ? `${num(e.value)} ${esc(e.unit || "")}` : ""} ${esc(e.details || "")}</td><td>${esc(e.date)}</td></tr>`).join("");
+  const recent = h.recent_entries.slice(0, 15).map((e) =>
+    `<li><b>${esc(e.date)}</b> ${esc(e.type.replace("_", " "))}${e.value != null ? ` · ${num(e.value)} ${esc(e.unit || "")}` : ""}${e.details ? ` · ${esc(e.details)}` : ""}</li>`).join("");
+  el.innerHTML = `
+    <h4>My health</h4>
+    ${goals || '<p class="muted">No goals yet. Tell the Orchestrator e.g. "my goal is to get to 80 kg".</p>'}
+    ${h.weights.length ? `<h4>Weight</h4>${weightChart(h.weights, goalW?.target)}` : ""}
+    ${latest ? `<h4>Latest</h4><table class="usage pf"><tr><th>type</th><th>value</th><th>date</th></tr>${latest}</table>` : ""}
+    ${recent ? `<h4>Recent entries</h4><ul class="tx">${recent}</ul>` : ""}
+    <p class="muted">Log anything in the chat: "I weigh 91.4 today", "walked 8,000 steps", "slept 6 hours".</p>`;
+}
+
+// Weight over time as a small line chart, with the target as a dashed line.
+function weightChart(points, target) {
+  const W = 420, H = 130, P = 26;
+  const vals = points.map((p) => p.value).concat(target != null ? [target] : []);
+  const lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + 1);
+  const t0 = new Date(points[0].date).getTime(), t1 = new Date(points.at(-1).date).getTime();
+  const x = (d) => P + (t1 === t0 ? (W - 2 * P) / 2 : ((new Date(d).getTime() - t0) / (t1 - t0)) * (W - 2 * P));
+  const y = (v) => H - P + 10 - ((v - lo) / (hi - lo)) * (H - P - 4);
+  const line = points.map((p) => `${x(p.date).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
+  return `<svg class="wchart" viewBox="0 0 ${W} ${H + 10}" role="img" aria-label="Weight chart">
+    ${target != null ? `<line x1="${P}" x2="${W - P}" y1="${y(target)}" y2="${y(target)}" class="target"/><text x="${W - P}" y="${y(target) - 4}" text-anchor="end">target ${target}</text>` : ""}
+    <polyline points="${line}" class="wline"/>
+    ${points.map((p) => `<rect x="${x(p.date) - 4}" y="${y(p.value) - 4}" width="8" height="8"><title>${p.date}: ${p.value} kg</title></rect>`).join("")}
+    <text x="${P}" y="${H + 8}">${esc(points[0].date)}</text><text x="${W - P}" y="${H + 8}" text-anchor="end">${esc(points.at(-1).date)}</text>
+    <text x="2" y="${y(hi) + 10}">${hi}</text><text x="2" y="${y(lo)}">${lo}</text>
+  </svg>`;
 }
 
 function contextHtml(c) {
@@ -698,13 +740,7 @@ function onEvent(ev) {
       }
       break;
     }
-    case "usage":
-      graphRun.usage[ev.agent] = ev.agent_total;
-      setUsageLabel(ev.agent, ev.agent_total);
-      break;
     case "run.end":
-      graphRun.usage = ev.usage || graphRun.usage;
-      Object.entries(graphRun.usage).forEach(([a, u]) => setUsageLabel(a, u));
       setNode("orchestrator", "done");
       setStatus("ready");
       break;
@@ -717,7 +753,8 @@ function onEvent(ev) {
   // Keep the inspector live.
   if ($("drawer").dataset.mode === "inspect" && ev.type !== "token") {
     if (selected?.startsWith("s:")) { if (ev.server === selected.slice(2)) renderCalls(liveCalls[ev.server]); }
-    else if (selected !== "d:finance" || ev.type === "domain.end" || ev.type === "run.end") renderPanel();
+    // Panels that load data (finance, healthcare) only refresh when an agent finishes, not on every event.
+    else if (!["d:finance", "d:healthcare"].includes(selected) || ev.type === "domain.end" || ev.type === "run.end") renderPanel();
   }
 }
 

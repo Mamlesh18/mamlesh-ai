@@ -107,6 +107,16 @@ async def get_tool_calls(domain: str, server: str):
     return await events.tool_calls(f"{domain}/{server}")
 
 
+@router.get("/api/healthcare")
+async def get_healthcare(days: int = 90):
+    """Health goals with progress, weight history and recent entries."""
+    from tools.health_tools import overview
+    try:
+        return await overview(days)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+
+
 @router.get("/api/finance/portfolio")
 async def get_portfolio():
     """The latest imported consolidated account statement (or null)."""
