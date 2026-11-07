@@ -17,7 +17,7 @@ DOMAINS = {
     "personal": "Mamlesh's own platform (profile, blogs, papers, talks, students, leads, site analytics, WhatsApp batches), Razorpay payments, and writing/reading daily notes in the memory folder.",
     "general": "Live web search and reading web pages (Tavily), current date/time, and maths.",
     "healthcare": "The healthcare system: health records, appointments and related data.",
-    "finance": "Live stock prices (NSE, BSE, US) and Indian mutual fund NAVs and returns.",
+    "finance": "Mamlesh's own Upstox account (holdings, positions, orders, funds, mutual funds, P&L), live stock prices (NSE, BSE, US), and Indian mutual fund NAVs and returns.",
     "brain": "Mamlesh's long-term memory and knowledge base: facts about Mamlesh, saved notes and documents. Search them or save new ones.",
 }
 

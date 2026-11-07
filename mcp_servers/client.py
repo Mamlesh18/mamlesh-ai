@@ -4,6 +4,7 @@ import re
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from mcp_servers import oauth
 from mcp_servers.config import MCP_SERVERS
 from utils.logger import get_logger
 
@@ -77,25 +78,72 @@ async def load_mcp_tools() -> dict:
     result = {}
     for domain, servers in MCP_SERVERS.items():
         result[domain] = {}
-        for name, cfg in servers.items():
-            cfg = dict(cfg)
-            enabled = cfg.pop("enabled", True)
-            blocked = cfg.pop("blocked", [])
-            info = {"status": "disabled", "tools": [], "error": None, "transport": cfg["transport"]}
-            result[domain][name] = info
-            if not enabled:
-                continue
-            try:
-                client = MultiServerMCPClient({name: cfg})
-                tools = await client.get_tools(server_name=name)
-                tools = [_limit_output(t) for t in tools]
-                if blocked:
-                    tools = [_block_paths(t, blocked) for t in tools]
-                info.update(status="connected", tools=tools)
-                log.info("MCP %s/%s connected with %d tools", domain, name, len(tools))
-            except Exception as e:
-                # Errors from the MCP client often come wrapped in an ExceptionGroup; show the real ones.
-                error = "; ".join(str(x) for x in getattr(e, "exceptions", [e]))
-                info.update(status="error", error=error)
-                log.warning("MCP %s/%s failed: %s", domain, name, error)
+        for name in servers:
+            result[domain][name] = await connect_server(domain, name)
     return result
+
+
+def _error_text(e: Exception) -> str:
+    # Errors from the MCP client often come wrapped in an ExceptionGroup; show the real ones.
+    return "; ".join(_error_text(x) if hasattr(x, "exceptions") else str(x) for x in getattr(e, "exceptions", [e]))
+
+
+def _is_auth_error(text: str) -> bool:
+    return "401" in text or "invalid_token" in text or "Unauthorized" in text
+
+
+# Set by services/run_service.py: called when an OAuth server's login expires during a tool call.
+on_auth_expired = None
+
+
+def _watch_auth(tool, domain: str, name: str):
+    """If a call fails because the login expired, flag the server (the UI shows a LOG IN button)."""
+    original = tool.coroutine
+
+    async def watched(**kwargs):
+        try:
+            return await original(**kwargs)
+        except Exception as e:
+            if not _is_auth_error(_error_text(e)):
+                raise
+            if on_auth_expired:
+                await on_auth_expired(domain, name)
+            return (f"The {name} login has expired. Tell the user to click the LOG IN button on the {name} node "
+                    "in the agent map to log in again, then retry.", None)
+
+    tool.coroutine = watched
+    return tool
+
+
+async def connect_server(domain: str, name: str) -> dict:
+    """Connect to one MCP server from config.py and load its tools."""
+    cfg = dict(MCP_SERVERS[domain][name])
+    enabled = cfg.pop("enabled", True)
+    blocked = cfg.pop("blocked", [])
+    uses_oauth = cfg.pop("oauth", False)
+    info = {"status": "disabled", "tools": [], "error": None, "transport": cfg["transport"], "oauth": uses_oauth}
+    if not enabled:
+        return info
+
+    if uses_oauth:
+        server = oauth.get_server(f"{domain}/{name}", cfg["url"])
+        if not await server.access_token():
+            log.info("MCP %s/%s needs login", domain, name)
+            return {**info, "status": "auth_required"}
+        cfg["auth"] = oauth.BearerAuth(server)
+
+    try:
+        client = MultiServerMCPClient({name: cfg})
+        tools = await client.get_tools(server_name=name)
+        tools = [_limit_output(t) for t in tools]
+        if blocked:
+            tools = [_block_paths(t, blocked) for t in tools]
+        if uses_oauth:
+            tools = [_watch_auth(t, domain, name) for t in tools]
+        log.info("MCP %s/%s connected with %d tools", domain, name, len(tools))
+        return {**info, "status": "connected", "tools": tools}
+    except Exception as e:
+        error = _error_text(e)
+        status = "auth_required" if uses_oauth and _is_auth_error(error) else "error"
+        log.warning("MCP %s/%s %s: %s", domain, name, status, error)
+        return {**info, "status": status, "error": error}

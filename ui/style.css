@@ -9,6 +9,7 @@
   --blue: #2f6bff;
   --green: #00c46a;
   --red: #ff3b2f;
+  --orange: #ff8a00;
   --line: 3px solid var(--ink);
   --shadow: 5px 5px 0 var(--ink);
   --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
@@ -124,3 +125,17 @@ table.usage tr.total td { background: var(--pink); font-weight: 700; }
   #panel { max-height: 50vh; }
   footer .box { max-height: 320px; }
 }
+
+/* ---------- MCP login (OAuth) ---------- */
+.auth-btn {
+  position: absolute; z-index: 3; transform: translateX(-50%);
+  padding: 4px 10px; font-size: 11px; background: var(--orange, #ff8a00); color: var(--ink);
+  box-shadow: 3px 3px 0 var(--ink); animation: nudge 1.2s ease-in-out infinite;
+}
+.auth-btn:hover { background: var(--ink); color: var(--yellow); }
+@keyframes nudge { 50% { transform: translateX(-50%) translateY(-3px); } }
+.auth-card { margin: 12px 0; padding: 12px; border: 3px solid var(--ink); background: #ff8a00; box-shadow: 4px 4px 0 var(--ink); }
+.auth-card b { font: 700 14px var(--mono); text-transform: uppercase; }
+.auth-card p { margin: 6px 0 10px; }
+.auth-card button { width: 100%; background: var(--ink); color: var(--yellow); }
+.badge.auth_required { background: #ff8a00; }

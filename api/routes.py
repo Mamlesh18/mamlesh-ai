@@ -1,5 +1,8 @@
 """All HTTP and WebSocket endpoints. The logic lives in services/."""
+import html
+
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from services import auth, events, run_service, stt
@@ -82,6 +85,45 @@ async def get_run_events(run_id: str):
 @router.get("/api/mcp/{domain}/{server}/calls")
 async def get_tool_calls(domain: str, server: str):
     return await events.tool_calls(f"{domain}/{server}")
+
+
+@router.post("/api/mcp/{domain}/{server}/auth/start")
+async def mcp_auth_start(domain: str, server: str, request: Request):
+    """Start the OAuth login for an MCP server (e.g. Upstox). Returns the URL to open."""
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    redirect_uri = f"{proto}://{request.headers['host']}/api/oauth/callback"
+    try:
+        return {"url": await run_service.auth_start(domain, server, redirect_uri)}
+    except Exception as e:
+        raise HTTPException(400, f"Could not start login: {e}")
+
+
+@router.get("/api/oauth/callback", response_class=HTMLResponse)
+async def mcp_auth_callback(code: str = "", state: str = "", error: str = "", error_description: str = ""):
+    """The provider sends the browser back here after login."""
+    if error or not code:
+        ok, message = False, f"Login was not completed: {error_description or error or 'no code returned'}"
+    else:
+        try:
+            server = await run_service.auth_finish(code, state)
+            ok, message = True, f"{server} is connected."
+        except Exception as e:
+            ok, message = False, f"Login failed: {e}"
+    return (OAUTH_DONE_PAGE.replace("{ok_tag}", "MCP login").replace("{title}", "Connected ✓" if ok else "Login failed")
+            .replace("{ok}", "true" if ok else "false").replace("{message}", html.escape(message)))
+
+
+OAUTH_DONE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Login</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/style.css"></head>
+<body style="display:grid;place-items:center;min-height:100vh;height:auto;grid-template-rows:1fr">
+<div class="box" style="padding:28px 24px;max-width:440px"><span class="tag">{ok_tag}</span>
+<h2 style="margin:8px 0 6px;font:700 24px var(--sans);text-transform:uppercase">{title}</h2><p>{message}</p>
+<p class="muted">This window will close by itself.</p></div>
+<script>
+  const ok = {ok};
+  if (window.opener) { window.opener.postMessage({type: "mcp-auth", ok}, location.origin); setTimeout(() => window.close(), ok ? 800 : 4000); }
+  else setTimeout(() => location.href = "/", ok ? 800 : 4000);
+</script></body></html>"""
 
 
 @router.websocket("/ws/stt")

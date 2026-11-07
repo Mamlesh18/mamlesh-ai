@@ -17,7 +17,7 @@ const activeCalls = {}; // server id -> number of tool calls still running
 
 // Radial layout: Orchestrator in the centre, domain agents on a circle around it,
 // each agent's MCP servers fanned outward, and each server's tools fanned outward again (shown on demand).
-const C = { ink: "#0a0a0a", paper: "#ffffff", bg: "#f3efe6", yellow: "#ffe500", pink: "#ff4fa3", blue: "#2f6bff", green: "#00c46a", red: "#ff3b2f" };
+const C = { ink: "#0a0a0a", paper: "#ffffff", bg: "#f3efe6", yellow: "#ffe500", pink: "#ff4fa3", blue: "#2f6bff", green: "#00c46a", red: "#ff3b2f", orange: "#ff8a00" };
 const R_DOMAIN = 210, R_SERVER = 120, SERVER_SPREAD = 0.7, R_TOOL = 85;
 const polar = (cx, cy, r, a) => ({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
 const expanded = new Set(); // server ids whose tools are shown
@@ -41,7 +41,8 @@ async function loadGraph() {
     d.servers.forEach((s, j) => {
       const sa = a + (j - (d.servers.length - 1) / 2) * SERVER_SPREAD;
       const sp = polar(dp.x, dp.y, R_SERVER, sa);
-      els.push({ data: { id: `s:${s.id}`, label: `${s.name}\n${s.tools.length} tools`, kind: "server" }, position: sp, classes: s.status });
+      const serverLabel = s.status === "auth_required" ? `${s.name}\nLOGIN NEEDED` : `${s.name}\n${s.tools.length} tools`;
+      els.push({ data: { id: `s:${s.id}`, label: serverLabel, kind: "server" }, position: sp, classes: s.status });
       els.push({ data: { source: `d:${d.name}`, target: `s:${s.id}` } });
 
       // Tools: an arc facing away from the agent, two staggered rows when there are many.
@@ -78,6 +79,8 @@ async function loadGraph() {
       { selector: "node[kind='server']", style: { shape: "diamond", width: 38, height: 38, "background-color": C.pink, "font-size": 10 } },
       { selector: "node[kind='server'].disabled", style: { "background-color": C.bg, opacity: 0.5 } },
       { selector: "node[kind='server'].error", style: { "background-color": C.red } },
+      { selector: "node[kind='server'].auth_required", style: {
+          "background-color": C.orange, "border-style": "dashed", "border-width": 4, "text-background-color": C.orange } },
       { selector: "node[kind='tool']", style: {
           width: 12, height: 12, "background-color": C.blue, "border-width": 2, "font-size": 9, "font-weight": 500,
           "text-opacity": 0, "text-background-opacity": 0, "text-border-opacity": 0 } },
@@ -99,7 +102,14 @@ async function loadGraph() {
   });
 
   cy.fit(cy.elements(":visible"), 40); // fit only what is shown, not the hidden tool nodes
-  window.addEventListener("resize", () => cy.fit(cy.elements(":visible"), 40));
+  if (!loadGraph.started) {
+    // Things that must only be set up once, even when the graph is rebuilt after an MCP login.
+    loadGraph.started = true;
+    window.addEventListener("resize", () => cy.fit(cy.elements(":visible"), 40));
+    setInterval(() => cy.edges(".active").forEach((e) => e.style("line-dash-offset", -((Date.now() / 30) % 16))), 50);
+  }
+  cy.on("pan zoom resize", placeAuthButtons);
+  placeAuthButtons();
 
   cy.on("tap", "node", (e) => {
     const node = e.target;
@@ -112,8 +122,54 @@ async function loadGraph() {
   cy.on("mouseout", "node[kind='tool']", (e) => e.target.removeClass("show-label"));
   $("fit").onclick = () => cy.animate({ fit: { eles: cy.elements(":visible"), padding: 40 }, duration: 300 });
   $("collapse").onclick = () => { [...expanded].forEach((id) => toggleTools(id, false)); cy.animate({ fit: { eles: cy.elements(":visible"), padding: 40 }, duration: 300 }); };
-  setInterval(() => cy.edges(".active").forEach((e) => e.style("line-dash-offset", -((Date.now() / 30) % 16))), 50);
 }
+
+// Rebuild the map (e.g. after an MCP server logged in or its login expired). Keeps the current run's colours.
+async function reloadGraph() {
+  if (cy) cy.destroy();
+  expanded.clear();
+  await loadGraph();
+  if (selected) renderPanel();
+}
+
+// ---------- MCP login (OAuth) ----------
+
+// A "⚠ LOG IN" button pinned under every server node that needs a login.
+function placeAuthButtons() {
+  const wrap = $("graph-wrap");
+  wrap.querySelectorAll(".auth-btn").forEach((b) => b.remove());
+  if (!cy) return;
+  cy.nodes("[kind='server'].auth_required").forEach((n) => {
+    const p = n.renderedPosition();
+    const b = document.createElement("button");
+    b.className = "auth-btn";
+    b.textContent = "⚠ Log in";
+    b.title = `Log in to ${n.id().slice(2)}`;
+    b.style.left = `${p.x}px`;
+    b.style.top = `${p.y + 48 * cy.zoom() + 18}px`;
+    b.onclick = (e) => { e.stopPropagation(); startAuth(n.id().slice(2)); };
+    wrap.appendChild(b);
+  });
+}
+
+async function startAuth(serverId) {
+  // Open the window first (browsers only allow pop-ups straight from a click), then send it to the login page.
+  const popup = window.open("", "mcp-login", "width=520,height=760");
+  const r = await fetch(`/api/mcp/${serverId}/auth/start`, { method: "POST" });
+  if (r.status === 401) { popup?.close(); return toLogin(); }
+  const data = await r.json();
+  if (!r.ok) { popup?.close(); alert(data.detail || "Could not start login."); return; }
+  if (popup) popup.location = data.url;
+  else location.href = data.url; // pop-ups blocked: log in in this tab, the callback page brings you back
+  $("status-text").textContent = "waiting for login…";
+}
+
+// The callback page tells us when the login window is done; the server also sends an mcp.status event.
+window.addEventListener("message", (e) => {
+  if (e.origin === location.origin && e.data?.type === "mcp-auth") {
+    $("status-text").textContent = e.data.ok ? "connected" : "login failed";
+  }
+});
 
 function toggleTools(serverId, zoom) {
   const show = !expanded.has(serverId);
@@ -236,8 +292,15 @@ function renderPanel() {
 async function renderServer(id) {
   const s = graphData.domains.flatMap((d) => d.servers).find((x) => x.id === id);
   const tools = s.tools.map((t) => `<div class="tool"><b>${esc(t.name)}</b><p>${esc(t.description)}</p></div>`).join("");
+  const authCard = s.status === "auth_required" ? `
+    <div class="auth-card">
+      <b>⚠ Login needed</b>
+      <p>${esc(s.name)} uses a browser login${s.name === "upstox" ? " (Upstox asks again once a day)" : ""}. Until you log in, its tools are switched off.</p>
+      <button type="button" onclick="startAuth('${esc(s.id)}')">Log in to ${esc(s.name)} →</button>
+    </div>` : s.oauth ? `<p class="muted">Logged in with OAuth. <a href="#" onclick="startAuth('${esc(s.id)}');return false">Log in again</a></p>` : "";
   $("panel-body").innerHTML = `<h2>${esc(s.name)}</h2>
-    <span class="badge ${s.status}">${s.status}</span> <span class="muted">${esc(s.transport)}</span>
+    <span class="badge ${s.status}">${s.status.replace("_", " ")}</span> <span class="muted">${esc(s.transport)}</span>
+    ${authCard}
     ${s.error ? `<pre class="muted">${esc(s.error)}</pre>` : ""}
     <h4>Calls</h4><div id="calls"><p class="muted">Loading…</p></div>
     <h4>Tools (${s.tools.length})</h4>${tools || '<p class="muted">No tools.</p>'}`;
@@ -279,6 +342,7 @@ function logEvent(ev) {
     usage: () => `${ev.agent} LLM call: ${ev.input_tokens} in / ${ev.output_tokens} out · ${usd(ev.cost)}`,
     "run.end": () => `done · ${usd(ev.totals?.cost)} · ${tok((ev.totals?.input_tokens || 0) + (ev.totals?.output_tokens || 0))} tokens`,
     "run.error": () => `error: ${ev.error}`,
+    "mcp.status": () => `${ev.server} → ${ev.status.replace("_", " ")}`,
   }[ev.type];
   const what = describe ? describe() : "";
   const li = document.createElement("li");
@@ -288,6 +352,13 @@ function logEvent(ev) {
 }
 
 function onEvent(ev) {
+  if (ev.type === "mcp.status") {
+    // An MCP server logged in, or its login expired: redraw the map with its new tools / LOG IN button.
+    logEvent(ev);
+    $("status-text").textContent = ev.status === "connected" ? `${ev.server} connected` : `${ev.server}: ${ev.status.replace("_", " ")}`;
+    reloadGraph();
+    return;
+  }
   if (ev.type === "run.start") {
     run = { id: ev.run_id, plan: [], domains: {}, usage: {}, totals: null };
     resetGraph();

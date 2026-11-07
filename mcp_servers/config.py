@@ -79,7 +79,9 @@ MCP_SERVERS = {
         # "healthcare_system": {...},
     },
     "finance": {
-        # "kite": {...}, "mutual_funds": {...},
+        # Mamlesh's Upstox account (read-only). Login is OAuth in the browser: "oauth": True
+        # makes the app handle registration, login, token refresh and the LOG IN button.
+        "upstox": {"transport": "streamable_http", "url": "https://mcp.upstox.com/mcp", "oauth": True},
     },
     "brain": {},  # Brain uses the custom FAISS tools in tools/brain_tools.py
 }
