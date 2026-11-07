@@ -34,6 +34,7 @@ class Plan(BaseModel):
 
 class State(TypedDict, total=False):
     query: str
+    history: str  # earlier turns of this chat ("" for a new chat)
     steps: list[dict]
     results: Annotated[list[dict], operator.add]  # parallel agents append here
     answer: str
@@ -107,8 +108,11 @@ def build_orchestrator(agents: dict, tool_owner: dict):
     async def planner(state: State, config: RunnableConfig):
         run_id = config["configurable"]["run_id"]
         await emit(run_id, "node.start", node="orchestrator")
+        request = state["query"]
+        if state.get("history"):
+            request = f"Conversation so far:\n{state['history']}\n\nNew request: {request}"
         plan = await llm.with_structured_output(Plan).ainvoke(
-            [("system", planner_prompt), ("user", state["query"])], config=events(config, "orchestrator")
+            [("system", planner_prompt), ("user", request)], config=events(config, "orchestrator")
         )
         steps = [s.model_dump() for s in plan.steps if s.domain in agents]
         await emit(run_id, "plan", steps=steps)
@@ -140,7 +144,8 @@ def build_orchestrator(agents: dict, tool_owner: dict):
         results = "\n\n".join(
             f"[{r['domain']}] task: {r['task']}\nresult: {r['result']}" for r in state.get("results", [])
         ) or "(no agent results)"
-        messages = [("system", synth_prompt), ("user", f"User request: {state['query']}\n\nAgent results:\n{results}")]
+        earlier = f"Conversation so far:\n{state['history']}\n\n" if state.get("history") else ""
+        messages = [("system", synth_prompt), ("user", f"{earlier}User request: {state['query']}\n\nAgent results:\n{results}")]
         answer = ""
         async for chunk in llm.astream(messages, config=events(config, "orchestrator")):
             if chunk.content:

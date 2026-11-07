@@ -51,6 +51,7 @@ async def ws_allowed(ws: WebSocket) -> bool:
 class RunRequest(BaseModel):
     query: str
     source: str = "text"  # "text" or "voice"
+    chat_id: str | None = None  # continue this chat; leave empty to start a new one
 
 
 @router.get("/api/health")
@@ -69,7 +70,26 @@ def get_graph():
 async def create_run(body: RunRequest):
     if not body.query.strip():
         raise HTTPException(400, "Query is empty")
-    return {"run_id": run_service.start_run(body.query.strip(), body.source)}
+    run_id, chat_id = run_service.start_run(body.query.strip(), body.source, body.chat_id)
+    return {"run_id": run_id, "chat_id": chat_id}
+
+
+@router.get("/api/chats")
+async def list_chats():
+    """Saved chats, newest first."""
+    return await run_service.list_chats()
+
+
+@router.get("/api/chats/{chat_id}")
+async def get_chat(chat_id: str):
+    """One chat with all its messages (question, answer, tokens, cost)."""
+    return await run_service.get_chat(chat_id)
+
+
+@router.get("/api/me")
+def me():
+    """Who is logged in (for the profile menu)."""
+    return {"email": auth.AUTH_EMAIL}
 
 
 @router.get("/api/runs")
@@ -143,7 +163,7 @@ async def mcp_auth_callback(code: str = "", state: str = "", error: str = "", er
 
 OAUTH_DONE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Login</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/style.css"></head>
-<body style="display:grid;place-items:center;min-height:100vh;height:auto;grid-template-rows:1fr">
+<body style="display:grid;place-items:center;min-height:100vh;height:auto;overflow:auto;padding:16px">
 <div class="box" style="padding:28px 24px;max-width:440px"><span class="tag">{ok_tag}</span>
 <h2 style="margin:8px 0 6px;font:700 24px var(--sans);text-transform:uppercase">{title}</h2><p>{message}</p>
 <p class="muted">This window will close by itself.</p></div>

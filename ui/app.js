@@ -1,34 +1,50 @@
-// Mamlesh AI OS - live view of the Orchestrator, domain agents and MCP servers.
+// Mamlesh AI OS - full-screen agent map, chat with the Orchestrator, and an inspector for every node.
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (v) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
 const tok = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n ?? 0));
 const usd = (c) => `$${(c || 0).toFixed(c < 0.01 ? 5 : 4)}`;
+const secs = (ms) => (ms ? `${(ms / 1000).toFixed(1)}s` : "");
+const toLogin = () => { location.href = "/login"; };
+const store = {  // per-browser convenience only (e.g. which chat was open); the app works without it
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+};
 
-let cy;                 // the graph
-let graphData = {};     // from /api/graph
-let selected = null;    // id of the node shown in the side panel
-let run = null;         // the run currently shown: {id, plan, domains: {name: {task, result, status}}, usage: {agent: totals}, totals}
-const liveCalls = {};   // server id -> [calls in this browser session, newest first]
-const activeCalls = {}; // server id -> number of tool calls still running
+let cy;                   // the graph
+let graphData = {};       // from /api/graph
+let selected = null;      // node shown in the inspector
+let graphRun = null;      // the run the map is showing: {id, plan, domains, usage}
+const liveCalls = {};     // server id -> calls seen in this tab, newest first
+const activeCalls = {};   // server id -> tool calls still running
+const expanded = new Set(); // server ids whose tools are shown
 
-// ---------- Graph ----------
+// Chat state
+let chatId = store.get("chatId");  // current chat (null = new chat)
+let messages = [];                  // run ids in this chat, oldest first
+const runs = {};                    // run id -> {query, answer, status, usage, totals, events, open}
+let pendingQuery = null;            // a question sent but not yet started on the server
+let busy = false;
 
-// Radial layout: Orchestrator in the centre, domain agents on a circle around it,
-// each agent's MCP servers fanned outward, and each server's tools fanned outward again (shown on demand).
+// =====================================================================
+// Graph: Orchestrator in the centre, agents on a circle, MCP servers fanned out, tools fanned out on demand
+// =====================================================================
+
 const C = { ink: "#0a0a0a", paper: "#ffffff", bg: "#f3efe6", yellow: "#ffe500", pink: "#ff4fa3", blue: "#2f6bff", green: "#00c46a", red: "#ff3b2f", orange: "#ff8a00" };
 const R_DOMAIN = 210, R_SERVER = 120, SERVER_SPREAD = 0.7, R_TOOL = 85;
 const polar = (cx, cy, r, a) => ({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
-const expanded = new Set(); // server ids whose tools are shown
-
-const toLogin = () => { location.href = "/login"; };
+const fitView = (animate) => {
+  if (!cy) return;
+  const opts = { eles: cy.elements(":visible"), padding: 70 };
+  animate ? cy.animate({ fit: opts, duration: 300 }) : cy.fit(opts.eles, opts.padding);
+};
 
 async function loadGraph() {
   const res = await fetch("/api/graph");
   if (res.status === 401) return toLogin();
   graphData = await res.json();
-  const els = [{ data: { id: "orchestrator", label: "ORCHESTRATOR", base: "ORCHESTRATOR", kind: "orchestrator" }, position: { x: 0, y: 0 } }];
+  const els = [{ data: { id: "orchestrator", label: "ORCHESTRATOR\nclick to chat", base: "ORCHESTRATOR\nclick to chat", kind: "orchestrator" }, position: { x: 0, y: 0 } }];
   const n = graphData.domains.length;
 
   graphData.domains.forEach((d, i) => {
@@ -45,7 +61,6 @@ async function loadGraph() {
       els.push({ data: { id: `s:${s.id}`, label: serverLabel, kind: "server" }, position: sp, classes: s.status });
       els.push({ data: { source: `d:${d.name}`, target: `s:${s.id}` } });
 
-      // Tools: an arc facing away from the agent, two staggered rows when there are many.
       const m = s.tools.length;
       const step = Math.min(0.32, 2.8 / Math.max(m, 1));
       s.tools.forEach((t, k) => {
@@ -72,7 +87,7 @@ async function loadGraph() {
           "text-border-color": C.ink, "text-border-width": 2, "text-border-opacity": 1,
           shape: "rectangle", "background-color": C.paper, "border-width": 3, "border-color": C.ink, width: 30, height: 30 } },
       { selector: "node[kind='orchestrator']", style: {
-          width: 92, height: 92, "background-color": C.ink, "font-size": 14, "text-valign": "center", "text-margin-y": 0,
+          width: 100, height: 100, "background-color": C.ink, "font-size": 13, "text-valign": "center", "text-margin-y": 0,
           color: C.yellow, "text-background-color": C.ink, "text-border-width": 0 } },
       { selector: "node[kind='domain']", style: { width: 56, height: 56, "background-color": C.yellow, "font-size": 12 } },
       { selector: "node[kind='domain'].empty", style: { "background-color": C.bg, "border-style": "dashed", color: "#5c5c5c" } },
@@ -101,53 +116,413 @@ async function loadGraph() {
     ],
   });
 
-  cy.fit(cy.elements(":visible"), 40); // fit only what is shown, not the hidden tool nodes
+  fitView(false);
   if (!loadGraph.started) {
-    // Things that must only be set up once, even when the graph is rebuilt after an MCP login.
     loadGraph.started = true;
-    window.addEventListener("resize", () => cy.fit(cy.elements(":visible"), 40));
-    setInterval(() => cy.edges(".active").forEach((e) => e.style("line-dash-offset", -((Date.now() / 30) % 16))), 50);
+    window.addEventListener("resize", () => { cy.resize(); fitView(false); placeAuthButtons(); });
+    setInterval(() => cy && cy.edges(".active").forEach((e) => e.style("line-dash-offset", -((Date.now() / 30) % 16))), 50);
   }
   cy.on("pan zoom resize", placeAuthButtons);
   placeAuthButtons();
 
   cy.on("tap", "node", (e) => {
     const node = e.target;
-    selected = node.id();
+    if (node.id() === "orchestrator") return openChat();
+    selected = node.data("kind") === "tool" ? `s:${node.data("server")}` : node.id();
     if (node.data("kind") === "server") toggleTools(node.id().slice(2), true);
-    if (node.data("kind") === "tool") selected = `s:${node.data("server")}`; // show the tool's server in the panel
-    renderPanel();
+    openInspector();
   });
   cy.on("mouseover", "node[kind='tool']", (e) => e.target.addClass("show-label"));
   cy.on("mouseout", "node[kind='tool']", (e) => e.target.removeClass("show-label"));
-  $("fit").onclick = () => cy.animate({ fit: { eles: cy.elements(":visible"), padding: 40 }, duration: 300 });
-  $("collapse").onclick = () => { [...expanded].forEach((id) => toggleTools(id, false)); cy.animate({ fit: { eles: cy.elements(":visible"), padding: 40 }, duration: 300 }); };
+  $("fit").onclick = () => fitView(true);
+  $("collapse").onclick = () => { [...expanded].forEach((id) => toggleTools(id, false)); fitView(true); };
 }
 
-// Rebuild the map (e.g. after an MCP server logged in or its login expired). Keeps the current run's colours.
 async function reloadGraph() {
   if (cy) cy.destroy();
   expanded.clear();
   await loadGraph();
-  if (selected) renderPanel();
+  if ($("drawer").dataset.mode === "inspect") renderPanel();
+}
+
+function toggleTools(serverId, zoom) {
+  const show = !expanded.has(serverId);
+  const els = cy.elements(`[server = "${serverId}"]`);
+  if (show) { expanded.add(serverId); els.removeClass("hidden"); }
+  else { expanded.delete(serverId); els.addClass("hidden"); }
+  if (show && zoom) cy.animate({ fit: { eles: cy.getElementById(`s:${serverId}`).union(els), padding: 60 }, duration: 350 });
+}
+
+function showTool(serverId) {
+  if (!expanded.has(serverId)) { expanded.add(serverId); cy.elements(`[server = "${serverId}"]`).removeClass("hidden"); }
+}
+
+function setNode(id, state) {
+  const n = cy?.getElementById(id);
+  if (n?.length) n.removeClass("queued running done failed").addClass(state);
+}
+
+function setEdge(target, state) {
+  const e = cy?.edges(`[target = "${target}"]`);
+  if (!e) return;
+  e.removeClass("active done");
+  if (state) e.addClass(state);
+}
+
+function setUsageLabel(agent, u) {
+  const n = cy?.getElementById(agent === "orchestrator" ? "orchestrator" : `d:${agent}`);
+  if (n?.length) n.data("label", `${agent === "orchestrator" ? "ORCHESTRATOR" : n.data("base")}\n${usd(u.cost)} · ${tok(u.input_tokens + u.output_tokens)} tok`);
+}
+
+function resetGraph() {
+  if (!cy) return;
+  cy.nodes().forEach((n) => n.data("base") && n.data("label", n.data("base")));
+  cy.nodes().removeClass("queued running done failed");
+  cy.edges().removeClass("active done");
+  for (const k in activeCalls) delete activeCalls[k];
+}
+
+// "⚠ LOG IN" buttons pinned under servers that need a login (e.g. Upstox)
+function placeAuthButtons() {
+  const wrap = $("graph-wrap");
+  wrap.querySelectorAll(".auth-btn").forEach((b) => b.remove());
+  if (!cy) return;
+  cy.nodes("[kind='server'].auth_required").forEach((n) => {
+    const p = n.renderedPosition();
+    const b = document.createElement("button");
+    b.className = "auth-btn";
+    b.textContent = "⚠ Log in";
+    b.title = `Log in to ${n.id().slice(2)}`;
+    b.style.left = `${p.x}px`;
+    b.style.top = `${p.y + 48 * cy.zoom() + 18}px`;
+    b.onclick = (e) => { e.stopPropagation(); startAuth(n.id().slice(2)); };
+    wrap.appendChild(b);
+  });
+}
+
+async function startAuth(serverId) {
+  // Open the window straight from the click (pop-up blockers), then point it at the provider's login page.
+  const popup = window.open("", "mcp-login", "width=520,height=760");
+  const r = await fetch(`/api/mcp/${serverId}/auth/start`, { method: "POST" });
+  if (r.status === 401) { popup?.close(); return toLogin(); }
+  const data = await r.json();
+  if (!r.ok) { popup?.close(); alert(data.detail || "Could not start login."); return; }
+  if (popup) popup.location = data.url;
+  else location.href = data.url;
+  setStatus("waiting for login…");
+}
+
+window.addEventListener("message", (e) => {
+  if (e.origin === location.origin && e.data?.type === "mcp-auth") setStatus(e.data.ok ? "connected" : "login failed");
+});
+
+// =====================================================================
+// Drawer: chat (orchestrator) or inspector (other nodes). The map shrinks to make room.
+// =====================================================================
+
+function openDrawer(mode) {
+  const drawer = $("drawer");
+  drawer.dataset.mode = mode;
+  drawer.setAttribute("aria-hidden", "false");
+  $("chat").hidden = mode !== "chat";
+  $("inspector").hidden = mode !== "inspect";
+  $("drawer-title").textContent = mode === "chat" ? "Orchestrator · chat" : "Inspector";
+  const wasOpen = document.body.classList.contains("drawer-open");
+  document.body.classList.add("drawer-open");
+  if (!wasOpen) setTimeout(() => { cy?.resize(); fitView(true); placeAuthButtons(); }, 220);
+}
+
+function closeDrawer() {
+  document.body.classList.remove("drawer-open");
+  $("drawer").setAttribute("aria-hidden", "true");
+  $("drawer").dataset.mode = "";
+  selected = null;
+  cy?.nodes().unselect();
+  setTimeout(() => { cy?.resize(); fitView(true); placeAuthButtons(); }, 220);
+}
+
+function openChat() {
+  openDrawer("chat");
+  $("chat-list").hidden = true;
+  renderMessages();
+  setTimeout(() => $("query").focus(), 230);
+}
+
+function openInspector() {
+  openDrawer("inspect");
+  renderPanel();
+}
+
+$("drawer-close").onclick = closeDrawer;
+$("chat-fab").onclick = openChat;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("drawer-open")) closeDrawer(); });
+
+// =====================================================================
+// Chat
+// =====================================================================
+
+const EXAMPLES = [
+  "How are my mutual funds doing?",
+  "What's on my GitHub this week?",
+  "Search the web for today's top AI news",
+  "Add to today's notes: worked on Mamlesh AI OS",
+];
+
+function renderMessages() {
+  const box = $("messages");
+  if (!messages.length) {
+    box.innerHTML = `
+      <div class="empty-chat">
+        <h3>Ask the Orchestrator</h3>
+        <p class="muted">It plans the work and hands it to your agents. Watch them light up on the map.</p>
+        <div class="chips">${EXAMPLES.map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>
+      </div>`;
+    box.querySelectorAll(".chips button").forEach((b) => (b.onclick = () => sendMessage(b.dataset.q)));
+    return;
+  }
+  box.innerHTML = messages.map((rid) => `<div class="msg user">${esc(runs[rid].query)}</div><div class="msg bot" id="m-${rid}"></div>`).join("")
+    + (pendingQuery ? `<div class="msg user">${esc(pendingQuery)}</div><div class="msg bot"><div class="answer"><span class="thinking">sending…</span></div></div>` : "");
+  messages.forEach(renderBot);
+  box.scrollTop = box.scrollHeight;
+}
+
+function formatAnswer(text) {
+  return esc(text).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+// One assistant message: answer, figures, and the Events / Cost toggles.
+function renderBot(rid) {
+  const el = $(`m-${rid}`);
+  const r = runs[rid];
+  if (!el || !r) return;
+  const box = $("messages");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  const t = r.totals || sumUsage(r.usage);
+  const running = r.status === "running";
+  const lastStep = running && r.events?.length ? describeEvent(r.events[r.events.length - 1]) : "planning…";
+  el.className = `msg bot${r.status === "error" ? " error" : ""}`;
+  el.innerHTML = `
+    <div class="answer">${r.answer ? formatAnswer(r.answer) : running ? `<span class="thinking">${esc(lastStep)}</span>` : r.status === "error" ? esc(r.error || "Something went wrong.") : ""}</div>
+    <div class="meta">
+      <span class="figs">${t.calls ? `${usd(t.cost)} · ${tok((t.input_tokens || 0) + (t.output_tokens || 0))} tok` : running ? "working…" : ""}${t.duration_ms ? ` · ${secs(t.duration_ms)}` : ""}</span>
+      <button type="button" data-k="events" class="${r.open.events ? "on" : ""}">Events${r.events ? ` (${r.events.length})` : ""}</button>
+      <button type="button" data-k="cost" class="${r.open.cost ? "on" : ""}">Cost</button>
+    </div>
+    ${r.open.events ? `<div class="detail">${eventsHtml(r)}</div>` : ""}
+    ${r.open.cost ? `<div class="detail">${usageTable(r.usage, r.totals)}</div>` : ""}`;
+  el.querySelectorAll(".meta button").forEach((b) => (b.onclick = () => toggleDetail(rid, b.dataset.k)));
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function toggleDetail(rid, kind) {
+  const r = runs[rid];
+  r.open[kind] = !r.open[kind];
+  if (kind === "events" && r.open.events && r.events == null) {
+    r.events = [];
+    renderBot(rid);
+    const res = await fetch(`/api/runs/${rid}/events`);
+    if (res.ok) r.events = (await res.json()).filter((e) => e.type !== "token");
+  }
+  renderBot(rid);
+}
+
+function eventsHtml(r) {
+  if (!r.events?.length) return `<p class="muted">${r.events ? "No events yet." : "Loading…"}</p>`;
+  return `<ol class="evlist">${r.events.map((ev) =>
+    `<li><span class="t ${eventKind(ev)}">${new Date(ev.ts).toLocaleTimeString()} ${esc(ev.type)}</span> ${esc(describeEvent(ev))}</li>`).join("")}</ol>`;
+}
+
+function sumUsage(usage) {
+  const rows = Object.values(usage || {});
+  const s = (k) => rows.reduce((a, u) => a + (u[k] || 0), 0);
+  return { calls: s("calls"), input_tokens: s("input_tokens"), cached_tokens: s("cached_tokens"), output_tokens: s("output_tokens"), cost: s("cost") };
+}
+
+function usageTable(usage, totals) {
+  const rows = Object.entries(usage || {});
+  if (!rows.length) return `<p class="muted">No LLM calls yet.</p>`;
+  const t = totals || sumUsage(usage);
+  const ctx = (a) => a === "orchestrator" ? "" : tok(graphData.domains?.find((d) => d.name === a)?.context?.total || 0);
+  return `
+    <table class="usage">
+      <tr><th>agent</th><th>calls</th><th>in</th><th>cached</th><th>out</th><th>cost</th><th title="Prompt + tool definitions sent on every call">ctx</th></tr>
+      ${rows.map(([a, u]) => `<tr><td>${esc(a)}</td><td>${u.calls}</td><td>${tok(u.input_tokens)}</td><td>${tok(u.cached_tokens)}</td><td>${tok(u.output_tokens)}</td><td>${usd(u.cost)}</td><td>${ctx(a)}</td></tr>`).join("")}
+      <tr class="total"><td>total</td><td>${t.calls}</td><td>${tok(t.input_tokens)}</td><td>${tok(t.cached_tokens)}</td><td>${tok(t.output_tokens)}</td><td>${usd(t.cost)}</td><td>${secs(t.duration_ms)}</td></tr>
+    </table>`;
+}
+
+async function sendMessage(text, source = "text") {
+  const query = (text ?? $("query").value).trim();
+  if (!query || busy) return;
+  $("query").value = "";
+  setBusy(true);
+  pendingQuery = query;
+  if ($("drawer").dataset.mode !== "chat") openChat(); else renderMessages();
+  try {
+    const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query, source, chat_id: chatId }) });
+    if (r.status === 401) return toLogin();
+    if (!r.ok) throw new Error(await r.text());
+    const { run_id, chat_id } = await r.json();
+    chatId = chat_id;
+    store.set("chatId", chatId);
+    attachRun(run_id, query);
+  } catch (err) {
+    pendingQuery = null;
+    setBusy(false);
+    alert(`Could not send: ${err.message}`);
+    renderMessages();
+  }
+}
+
+// Link a started run to this chat (its run.start event may arrive before or after the POST returns).
+function attachRun(rid, query) {
+  runs[rid] ||= { query, answer: "", status: "running", usage: {}, totals: null, events: [], open: { events: false, cost: false } };
+  if (!messages.includes(rid)) messages.push(rid);
+  pendingQuery = null;
+  renderMessages();
+}
+
+async function loadChat(id) {
+  chatId = id;
+  store.set("chatId", id);
+  messages = [];
+  if (id) {
+    const r = await fetch(`/api/chats/${id}`);
+    if (r.status === 401) return toLogin();
+    const chat = await r.json();
+    for (const m of chat.messages) {
+      runs[m.run_id] ||= { query: m.query, answer: m.answer, status: m.status, usage: m.usage || {}, totals: m.totals,
+                           events: null, open: { events: false, cost: false }, error: m.status === "error" ? "This query failed." : "" };
+      messages.push(m.run_id);
+    }
+    if (!chat.messages.length) { chatId = null; store.set("chatId", null); }
+  }
+  $("chat-list").hidden = true;
+  renderMessages();
+}
+
+$("new-chat").onclick = () => { if (!busy) loadChat(null); $("query").focus(); };
+
+$("history-btn").onclick = async () => {
+  const list = $("chat-list");
+  if (!list.hidden) { list.hidden = true; return; }
+  list.hidden = false;
+  list.innerHTML = `<p class="muted">Loading…</p>`;
+  const r = await fetch("/api/chats");
+  if (r.status === 401) return toLogin();
+  const chats = await r.json();
+  list.innerHTML = chats.length
+    ? chats.map((c) => `<button type="button" data-id="${esc(c.chat_id)}" class="${c.chat_id === chatId ? "current" : ""}">${esc(c.title)}<small>${new Date(c.updated_at).toLocaleString()}</small></button>`).join("")
+    : `<p class="muted">No saved chats yet.</p>`;
+  list.querySelectorAll("button[data-id]").forEach((b) => (b.onclick = () => loadChat(b.dataset.id)));
+};
+
+$("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendMessage(); });
+$("query").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+// =====================================================================
+// Inspector (agents and MCP servers)
+// =====================================================================
+
+function renderPanel() {
+  const p = $("panel-body");
+  if (!selected) return;
+
+  if (selected.startsWith("d:")) {
+    const name = selected.slice(2);
+    const d = graphData.domains.find((x) => x.name === name);
+    if (!d) return;
+    const r = graphRun?.domains?.[name];
+    const servers = d.servers.map((s) =>
+      `<div class="tool"><b>${esc(s.name)}</b> <span class="badge ${s.status}">${s.status.replace("_", " ")}</span><p>${s.tools.length} tools · ${esc(s.transport)}</p></div>`).join("");
+    p.innerHTML = `<h2>${esc(name)} agent</h2><p class="muted">${esc(d.description)}</p>
+      <h4>Latest query</h4>${r ? `<span class="badge ${r.status}">${r.status}</span>
+        <p><b>Task:</b> ${esc(r.task)}</p>${r.result ? `<p><b>Result:</b> ${esc(r.result)}</p>` : ""}` : '<p class="muted">Not used in the latest query.</p>'}
+      ${name === "finance" ? '<div id="portfolio"><p class="muted">Loading portfolio…</p></div>' : ""}
+      ${usageHtml(name)}
+      ${contextHtml(d.context)}
+      <h4>MCP servers / tools</h4>${servers || '<p class="muted">No tools configured yet. Add MCP servers in mcp_servers/config.py.</p>'}`;
+    if (name === "finance") renderPortfolio();
+    return;
+  }
+  if (selected.startsWith("s:")) renderServer(selected.slice(2));
+}
+
+function usageHtml(agent) {
+  const u = graphRun?.usage?.[agent];
+  if (!u) return "";
+  return `<h4>Tokens &amp; cost in the latest query</h4>
+    <div class="stats">
+      <div class="stat"><b>${usd(u.cost)}</b><span>cost · ${u.calls} LLM calls</span></div>
+      <div class="stat"><b>${tok(u.input_tokens)} / ${tok(u.output_tokens)}</b><span>in / out tokens (${tok(u.cached_tokens)} cached)</span></div>
+    </div>`;
+}
+
+function contextHtml(c) {
+  if (!c) return "";
+  return `<h4>Context size (sent on every LLM call)</h4>
+    <div class="stats">
+      <div class="stat"><b>${tok(c.total)}</b><span>tokens per call</span></div>
+      <div class="stat"><b>${c.tools}</b><span>tools</span></div>
+      <div class="stat"><b>${tok(c.prompt_tokens)}</b><span>prompt tokens</span></div>
+      <div class="stat"><b>${tok(c.tool_tokens)}</b><span>tool definition tokens</span></div>
+    </div>`;
+}
+
+async function renderServer(id) {
+  const s = graphData.domains.flatMap((d) => d.servers).find((x) => x.id === id);
+  if (!s) return;
+  const tools = s.tools.map((t) => `<div class="tool"><b>${esc(t.name)}</b><p>${esc(t.description)}</p></div>`).join("");
+  const authCard = s.status === "auth_required" ? `
+    <div class="auth-card">
+      <b>⚠ Login needed</b>
+      <p>${esc(s.name)} uses a browser login${s.name === "upstox" ? " (Upstox asks again once a day)" : ""}. Until you log in, its tools are switched off.</p>
+      <button type="button" onclick="startAuth('${esc(s.id)}')">Log in to ${esc(s.name)} →</button>
+    </div>` : s.oauth ? `<p class="muted">Logged in with OAuth. <a href="#" onclick="startAuth('${esc(s.id)}');return false">Log in again</a></p>` : "";
+  $("panel-body").innerHTML = `<h2>${esc(s.name)}</h2>
+    <span class="badge ${s.status}">${s.status.replace("_", " ")}</span> <span class="muted">${esc(s.transport)}</span>
+    ${authCard}
+    ${s.error && s.status !== "auth_required" ? `<pre class="muted">${esc(s.error)}</pre>` : ""}
+    <h4>Calls</h4><div id="calls"><p class="muted">Loading…</p></div>
+    <h4>Tools (${s.tools.length})</h4>${tools || '<p class="muted">No tools.</p>'}`;
+
+  let saved = [];
+  try { saved = await (await fetch(`/api/mcp/${id}/calls`)).json(); } catch {}
+  if (selected !== `s:${id}`) return;
+  const live = liveCalls[id] || [];
+  const seen = new Set(live.map((c) => c.key));
+  renderCalls([...live, ...saved.filter((c) => !seen.has(`${c.run_id}|${c.tool}|${c.ts}`))]);
+}
+
+function renderCalls(calls) {
+  const el = $("calls");
+  if (!el) return;
+  el.innerHTML = calls.map((c) => `
+    <div class="call ${c.status || (c.type === "tool.error" ? "error" : "done")}">
+      <b>${esc(c.tool)}</b> <span class="muted">${new Date(c.ts).toLocaleTimeString()}${c.duration_ms != null ? ` · ${c.duration_ms} ms` : " · running…"}</span>
+      <details><summary class="muted">args / result</summary>
+        <pre>${esc(fmt(c.args))}</pre><pre>${esc(c.error || c.result || "")}</pre></details>
+    </div>`).join("") || '<p class="muted">No calls yet.</p>';
 }
 
 // ---------- Portfolio (from the uploaded CAS statement) ----------
 
-let portfolio;   // cached; undefined = not loaded yet, null = no statement uploaded
+let portfolio;   // undefined = not loaded, null = no statement uploaded
 const inr = (v) => `₹${Number(v || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 const pct = (v) => (v == null ? "–" : `${v > 0 ? "+" : ""}${Number(v).toFixed(2)}%`);
 const tone = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
 
 async function renderPortfolio(reload = false) {
-  const el = $("portfolio");
-  if (!el) return;
+  if (!$("portfolio")) return;
   if (portfolio === undefined || reload) {
     const r = await fetch("/api/finance/portfolio");
     if (r.status === 401) return toLogin();
     portfolio = await r.json();
   }
-  if (!$("portfolio")) return; // panel changed while loading
+  const el = $("portfolio");
+  if (!el) return;
   const s = portfolio;
   const upload = `
     <form class="upload" id="cas-form">
@@ -165,8 +540,7 @@ async function renderPortfolio(reload = false) {
       `<span style="width:${a.percent}%" class="seg seg${i}" title="${esc(a.asset_class)}: ${inr(a.value)} (${a.percent}%)"></span>`).join("");
     const legend = s.asset_allocation.map((a, i) => `<span><i class="seg${i}"></i>${esc(a.asset_class)} ${a.percent}%</span>`).join("");
     const max = Math.max(...s.monthly_values.map((m) => m.value), 1);
-    const bars = s.monthly_values.map((m) =>
-      `<span title="${m.month}: ${inr(m.value)}" style="height:${Math.max(4, (m.value / max) * 100)}%"></span>`).join("");
+    const bars = s.monthly_values.map((m) => `<span title="${m.month}: ${inr(m.value)}" style="height:${Math.max(4, (m.value / max) * 100)}%"></span>`).join("");
     const mf = s.mf_folios.slice().sort((a, b) => b.value - a.value).map((f) => `
       <tr><td title="${esc(f.scheme)} · folio ${esc(f.folio)} · ${esc(f.plan)}">${esc(f.scheme.replace(/ - (Regular|Direct) Plan.*$| Regular Plan.*$| - Growth.*$/i, ""))}
         <small>${esc(f.plan)}</small></td><td>${inr(f.invested)}</td><td>${inr(f.value)}</td><td class="${tone(f.gain_percent)}">${pct(f.gain_percent)}</td></tr>`).join("");
@@ -218,209 +592,14 @@ async function uploadStatement(e) {
   }
 }
 
-// ---------- MCP login (OAuth) ----------
+// =====================================================================
+// Live events from the server
+// =====================================================================
 
-// A "⚠ LOG IN" button pinned under every server node that needs a login.
-function placeAuthButtons() {
-  const wrap = $("graph-wrap");
-  wrap.querySelectorAll(".auth-btn").forEach((b) => b.remove());
-  if (!cy) return;
-  cy.nodes("[kind='server'].auth_required").forEach((n) => {
-    const p = n.renderedPosition();
-    const b = document.createElement("button");
-    b.className = "auth-btn";
-    b.textContent = "⚠ Log in";
-    b.title = `Log in to ${n.id().slice(2)}`;
-    b.style.left = `${p.x}px`;
-    b.style.top = `${p.y + 48 * cy.zoom() + 18}px`;
-    b.onclick = (e) => { e.stopPropagation(); startAuth(n.id().slice(2)); };
-    wrap.appendChild(b);
-  });
-}
-
-async function startAuth(serverId) {
-  // Open the window first (browsers only allow pop-ups straight from a click), then send it to the login page.
-  const popup = window.open("", "mcp-login", "width=520,height=760");
-  const r = await fetch(`/api/mcp/${serverId}/auth/start`, { method: "POST" });
-  if (r.status === 401) { popup?.close(); return toLogin(); }
-  const data = await r.json();
-  if (!r.ok) { popup?.close(); alert(data.detail || "Could not start login."); return; }
-  if (popup) popup.location = data.url;
-  else location.href = data.url; // pop-ups blocked: log in in this tab, the callback page brings you back
-  $("status-text").textContent = "waiting for login…";
-}
-
-// The callback page tells us when the login window is done; the server also sends an mcp.status event.
-window.addEventListener("message", (e) => {
-  if (e.origin === location.origin && e.data?.type === "mcp-auth") {
-    $("status-text").textContent = e.data.ok ? "connected" : "login failed";
-  }
-});
-
-function toggleTools(serverId, zoom) {
-  const show = !expanded.has(serverId);
-  const els = cy.elements(`[server = "${serverId}"]`);
-  if (show) { expanded.add(serverId); els.removeClass("hidden"); }
-  else { expanded.delete(serverId); els.addClass("hidden"); }
-  if (show && zoom) cy.animate({ fit: { eles: cy.getElementById(`s:${serverId}`).union(els), padding: 60 }, duration: 350 });
-}
-
-function showTool(serverId) {
-  // A tool is being called: make sure its server's tools are visible (without moving the camera).
-  if (!expanded.has(serverId)) { expanded.add(serverId); cy.elements(`[server = "${serverId}"]`).removeClass("hidden"); }
-}
-
-function setNode(id, state) {
-  const n = cy.getElementById(id);
-  if (!n.length) return;
-  n.removeClass("queued running done failed").addClass(state);
-}
-
-function setEdge(target, state) {
-  const e = cy.edges(`[target = "${target}"]`);
-  e.removeClass("active done");
-  if (state) e.addClass(state);
-}
-
-// ---------- Cost & tokens ----------
-
-function setUsageLabel(agent, u) {
-  const n = cy.getElementById(agent === "orchestrator" ? "orchestrator" : `d:${agent}`);
-  if (n.length) n.data("label", `${n.data("base")}\n${usd(u.cost)} · ${tok(u.input_tokens + u.output_tokens)} tok`);
-}
-
-function renderUsage() {
-  const el = $("usage");
-  const rows = Object.entries(run?.usage || {});
-  if (!rows.length) { el.className = "muted"; el.textContent = "No LLM calls yet."; return; }
-  el.className = "";
-  const sum = (k) => rows.reduce((s, [, u]) => s + (u[k] || 0), 0);
-  const t = run.totals || { calls: sum("calls"), input_tokens: sum("input_tokens"), cached_tokens: sum("cached_tokens"), output_tokens: sum("output_tokens"), cost: sum("cost") };
-  const ctx = (a) => a === "orchestrator" ? "" : tok(graphData.domains.find((d) => d.name === a)?.context?.total || 0);
-  el.innerHTML = `
-    <div class="stats">
-      <div class="stat"><b>${usd(t.cost)}</b><span>total cost${t.duration_ms ? ` · ${(t.duration_ms / 1000).toFixed(1)} s` : ""}</span></div>
-      <div class="stat"><b>${tok(t.input_tokens + t.output_tokens)}</b><span>tokens · ${t.calls} LLM calls</span></div>
-    </div>
-    <table class="usage">
-      <tr><th>agent</th><th>calls</th><th>in</th><th>cached</th><th>out</th><th>cost</th><th title="Prompt + tool definitions sent on every call">ctx/call</th></tr>
-      ${rows.map(([a, u]) => `<tr><td>${esc(a)}</td><td>${u.calls}</td><td>${tok(u.input_tokens)}</td><td>${tok(u.cached_tokens)}</td><td>${tok(u.output_tokens)}</td><td>${usd(u.cost)}</td><td>${ctx(a)}</td></tr>`).join("")}
-      <tr class="total"><td>total</td><td>${t.calls}</td><td>${tok(t.input_tokens)}</td><td>${tok(t.cached_tokens)}</td><td>${tok(t.output_tokens)}</td><td>${usd(t.cost)}</td><td></td></tr>
-    </table>`;
-}
-
-function contextHtml(c) {
-  if (!c) return "";
-  return `<h4>Context size (sent on every LLM call)</h4>
-    <div class="stats">
-      <div class="stat"><b>${tok(c.total)}</b><span>tokens per call</span></div>
-      <div class="stat"><b>${c.tools}</b><span>tools</span></div>
-      <div class="stat"><b>${tok(c.prompt_tokens)}</b><span>prompt tokens</span></div>
-      <div class="stat"><b>${tok(c.tool_tokens)}</b><span>tool definition tokens</span></div>
-    </div>`;
-}
-
-function usageHtml(agent) {
-  const u = run?.usage?.[agent];
-  if (!u) return "";
-  return `<h4>Tokens &amp; cost in this run</h4>
-    <div class="stats">
-      <div class="stat"><b>${usd(u.cost)}</b><span>cost · ${u.calls} LLM calls</span></div>
-      <div class="stat"><b>${tok(u.input_tokens)} / ${tok(u.output_tokens)}</b><span>in / out tokens (${tok(u.cached_tokens)} cached)</span></div>
-    </div>`;
-}
-
-function resetGraph() {
-  cy.nodes().forEach((n) => n.data("base") && n.data("label", n.data("base")));
-  cy.nodes().removeClass("queued running done failed");
-  cy.edges().removeClass("active done");
-  for (const k in activeCalls) delete activeCalls[k];
-}
-
-// ---------- Side panel ----------
-
-function renderPanel() {
-  const p = $("panel-body");
-  if (!selected) return;
-
-  if (selected === "orchestrator") {
-    const steps = run?.plan?.map((s) => `<div class="tool"><b>${esc(s.domain)}</b><p>${esc(s.task)}</p></div>`).join("");
-    const oc = graphData.orchestrator?.context || {};
-    p.innerHTML = `<h2>Orchestrator</h2><p class="muted">Plans the work and sends each step to a domain agent.</p>
-      <h4>Current plan</h4>${steps || '<p class="muted">No plan yet.</p>'}
-      ${usageHtml("orchestrator")}
-      <h4>Prompt sizes</h4>
-      <div class="stats">
-        <div class="stat"><b>${tok(oc.planner_prompt_tokens)}</b><span>planner prompt tokens</span></div>
-        <div class="stat"><b>${tok(oc.synthesizer_prompt_tokens)}</b><span>synthesizer prompt tokens</span></div>
-      </div>`;
-    return;
-  }
-
-  if (selected.startsWith("d:")) {
-    const name = selected.slice(2);
-    const d = graphData.domains.find((x) => x.name === name);
-    const r = run?.domains?.[name];
-    const servers = d.servers.map((s) =>
-      `<div class="tool"><b>${esc(s.name)}</b> <span class="badge ${s.status}">${s.status}</span><p>${s.tools.length} tools · ${esc(s.transport)}</p></div>`).join("");
-    p.innerHTML = `<h2>${esc(name)} agent</h2><p class="muted">${esc(d.description)}</p>
-      <h4>In this run</h4>${r ? `<span class="badge ${r.status}">${r.status}</span>
-        <p><b>Task:</b> ${esc(r.task)}</p>${r.result ? `<p><b>Result:</b> ${esc(r.result)}</p>` : ""}` : '<p class="muted">Not used in this run.</p>'}
-      ${name === "finance" ? '<div id="portfolio"><p class="muted">Loading portfolio…</p></div>' : ""}
-      ${usageHtml(name)}
-      ${contextHtml(d.context)}
-      <h4>MCP servers / tools</h4>${servers || '<p class="muted">No tools configured yet. Add MCP servers in mcp_servers/config.py.</p>'}`;
-    if (name === "finance") renderPortfolio();
-    return;
-  }
-
-  if (selected.startsWith("s:")) renderServer(selected.slice(2));
-}
-
-async function renderServer(id) {
-  const s = graphData.domains.flatMap((d) => d.servers).find((x) => x.id === id);
-  const tools = s.tools.map((t) => `<div class="tool"><b>${esc(t.name)}</b><p>${esc(t.description)}</p></div>`).join("");
-  const authCard = s.status === "auth_required" ? `
-    <div class="auth-card">
-      <b>⚠ Login needed</b>
-      <p>${esc(s.name)} uses a browser login${s.name === "upstox" ? " (Upstox asks again once a day)" : ""}. Until you log in, its tools are switched off.</p>
-      <button type="button" onclick="startAuth('${esc(s.id)}')">Log in to ${esc(s.name)} →</button>
-    </div>` : s.oauth ? `<p class="muted">Logged in with OAuth. <a href="#" onclick="startAuth('${esc(s.id)}');return false">Log in again</a></p>` : "";
-  $("panel-body").innerHTML = `<h2>${esc(s.name)}</h2>
-    <span class="badge ${s.status}">${s.status.replace("_", " ")}</span> <span class="muted">${esc(s.transport)}</span>
-    ${authCard}
-    ${s.error ? `<pre class="muted">${esc(s.error)}</pre>` : ""}
-    <h4>Calls</h4><div id="calls"><p class="muted">Loading…</p></div>
-    <h4>Tools (${s.tools.length})</h4>${tools || '<p class="muted">No tools.</p>'}`;
-
-  // Merge saved history (MongoDB) with calls seen live in this tab.
-  let saved = [];
-  try { saved = await (await fetch(`/api/mcp/${id}/calls`)).json(); } catch {}
-  if (selected !== `s:${id}`) return;
-  const live = liveCalls[id] || [];
-  const seen = new Set(live.map((c) => c.key));
-  const calls = [...live, ...saved.filter((c) => !seen.has(`${c.run_id}|${c.tool}|${c.ts}`))];
-  renderCalls(calls);
-}
-
-function renderCalls(calls) {
-  const el = $("calls");
-  if (!el) return;
-  el.innerHTML = calls.map((c) => `
-    <div class="call ${c.status || (c.type === "tool.error" ? "error" : "done")}">
-      <b>${esc(c.tool)}</b> <span class="muted">${new Date(c.ts).toLocaleTimeString()}${c.duration_ms != null ? ` · ${c.duration_ms} ms` : " · running…"}</span>
-      <details><summary class="muted">args / result</summary>
-        <pre>${esc(fmt(c.args))}</pre><pre>${esc(c.error || c.result || "")}</pre></details>
-    </div>`).join("") || '<p class="muted">No calls yet.</p>';
-}
-
-// ---------- Live events ----------
-
-function logEvent(ev) {
-  if (ev.type === "token") return;
-  // Functions, so only the matching event's text is built (each event has different fields).
-  const describe = {
+function describeEvent(ev) {
+  const d = {
     "run.start": () => `query: ${ev.query}`,
+    "node.start": () => "planning…",
     plan: () => `plan: ${(ev.steps || []).map((s) => s.domain).join(", ") || "answer directly"}`,
     "domain.start": () => `${ev.domain} → ${ev.task}`,
     "domain.end": () => `${ev.domain} ${ev.status}`,
@@ -428,68 +607,82 @@ function logEvent(ev) {
     "tool.end": () => `${ev.server} · ${ev.tool} ✓ ${ev.duration_ms} ms`,
     "tool.error": () => `${ev.server} · ${ev.tool} ✗ ${ev.error}`,
     usage: () => `${ev.agent} LLM call: ${ev.input_tokens} in / ${ev.output_tokens} out · ${usd(ev.cost)}`,
+    "node.end": () => "writing the answer…",
     "run.end": () => `done · ${usd(ev.totals?.cost)} · ${tok((ev.totals?.input_tokens || 0) + (ev.totals?.output_tokens || 0))} tokens`,
     "run.error": () => `error: ${ev.error}`,
     "mcp.status": () => `${ev.server} → ${ev.status.replace("_", " ")}`,
     "portfolio.updated": () => `new statement: ₹${Number(ev.total_value).toLocaleString("en-IN")} as on ${ev.as_on}`,
   }[ev.type];
-  const what = describe ? describe() : "";
-  const li = document.createElement("li");
-  const kind = ev.type.startsWith("tool.") ? (ev.type === "tool.error" ? "lt-err" : "lt-tool") : ev.type === "usage" ? "lt-cost" : ev.type === "run.error" ? "lt-err" : "";
-  li.innerHTML = `<span class="t ${kind}">${new Date(ev.ts).toLocaleTimeString()} ${esc(ev.type)}</span> ${esc(what)}`;
-  $("log").prepend(li);
+  return d ? d() : "";
+}
+
+function eventKind(ev) {
+  if (ev.type === "tool.error" || ev.type === "run.error") return "lt-err";
+  if (ev.type.startsWith("tool.")) return "lt-tool";
+  return ev.type === "usage" ? "lt-cost" : "";
 }
 
 function onEvent(ev) {
   if (ev.type === "portfolio.updated") {
-    logEvent(ev);
-    portfolio = undefined; // reload next time the finance panel is shown
+    portfolio = undefined;
     if (selected === "d:finance") renderPortfolio(true);
     return;
   }
   if (ev.type === "mcp.status") {
-    // An MCP server logged in, or its login expired: redraw the map with its new tools / LOG IN button.
-    logEvent(ev);
-    $("status-text").textContent = ev.status === "connected" ? `${ev.server} connected` : `${ev.server}: ${ev.status.replace("_", " ")}`;
+    setStatus(ev.status === "connected" ? `${ev.server} connected` : `${ev.server}: ${ev.status.replace("_", " ")}`);
     reloadGraph();
     return;
   }
-  if (ev.type === "run.start") {
-    run = { id: ev.run_id, plan: [], domains: {}, usage: {}, totals: null };
-    resetGraph();
-    renderUsage();
-    $("log").innerHTML = "";
-    $("answer").textContent = "";
-    $("answer").classList.remove("muted");
-    if (!$("query").value) $("query").value = ev.query;
-    setBusy(true);
+
+  // ---- the chat message for this run ----
+  if (ev.type === "run.start" && pendingQuery && !runs[ev.run_id] && (ev.chat_id === chatId || ev.query === pendingQuery)) {
+    chatId = ev.chat_id;
+    store.set("chatId", chatId);
+    attachRun(ev.run_id, ev.query);
   }
-  if (!run || ev.run_id !== run.id) return;
-  logEvent(ev);
+  const r = runs[ev.run_id];
+  if (r) {
+    if (ev.type === "token") r.answer += ev.text;
+    else {
+      r.events?.push(ev);
+      if (ev.type === "usage") r.usage[ev.agent] = ev.agent_total;
+      if (ev.type === "run.end") Object.assign(r, { status: "done", answer: ev.answer || r.answer, usage: ev.usage || r.usage, totals: ev.totals });
+      if (ev.type === "run.error") Object.assign(r, { status: "error", error: ev.error });
+    }
+    renderBot(ev.run_id);
+    if (ev.type === "run.end" || ev.type === "run.error") setBusy(false);
+  }
+
+  // ---- the map ----
+  if (ev.type === "run.start") {
+    graphRun = { id: ev.run_id, plan: [], domains: {}, usage: {} };
+    resetGraph();
+    setStatus("working…", true);
+  }
+  if (!graphRun || ev.run_id !== graphRun.id) return;
 
   switch (ev.type) {
     case "node.start": setNode("orchestrator", "running"); break;
     case "plan":
-      run.plan = ev.steps;
+      graphRun.plan = ev.steps;
       ev.steps.forEach((s) => setNode(`d:${s.domain}`, "queued"));
       break;
     case "domain.start":
-      run.domains[ev.domain] = { task: ev.task, status: "running" };
+      graphRun.domains[ev.domain] = { task: ev.task, status: "running" };
       setNode(`d:${ev.domain}`, "running"); setEdge(`d:${ev.domain}`, "active");
       break;
     case "domain.end":
-      Object.assign(run.domains[ev.domain] ||= {}, { status: ev.status, result: ev.result });
+      Object.assign(graphRun.domains[ev.domain] ||= {}, { status: ev.status, result: ev.result });
       setNode(`d:${ev.domain}`, ev.status === "done" ? "done" : "failed");
       setEdge(`d:${ev.domain}`, "done");
       break;
-    case "tool.start": {
+    case "tool.start":
       activeCalls[ev.server] = (activeCalls[ev.server] || 0) + 1;
       setNode(`s:${ev.server}`, "running"); setEdge(`s:${ev.server}`, "active");
       showTool(ev.server);
       setNode(`t:${ev.server}/${ev.tool}`, "running"); setEdge(`t:${ev.server}/${ev.tool}`, "active");
       (liveCalls[ev.server] ||= []).unshift({ ...ev, status: "running", key: null });
       break;
-    }
     case "tool.end":
     case "tool.error": {
       activeCalls[ev.server] = Math.max(0, (activeCalls[ev.server] || 1) - 1);
@@ -505,65 +698,82 @@ function onEvent(ev) {
       }
       break;
     }
-    case "token": $("answer").textContent += ev.text; break;
     case "usage":
-      run.usage[ev.agent] = ev.agent_total;
+      graphRun.usage[ev.agent] = ev.agent_total;
       setUsageLabel(ev.agent, ev.agent_total);
-      renderUsage();
       break;
     case "run.end":
-      run.usage = ev.usage || run.usage;
-      run.totals = ev.totals;
-      Object.entries(run.usage).forEach(([a, u]) => setUsageLabel(a, u));
-      renderUsage();
+      graphRun.usage = ev.usage || graphRun.usage;
+      Object.entries(graphRun.usage).forEach(([a, u]) => setUsageLabel(a, u));
       setNode("orchestrator", "done");
-      if (!$("answer").textContent) $("answer").textContent = ev.answer;
-      setBusy(false);
+      setStatus("ready");
       break;
     case "run.error":
       setNode("orchestrator", "failed");
-      $("answer").textContent = `Error: ${ev.error}`;
-      setBusy(false);
+      setStatus("ready");
       break;
   }
 
-  // Keep the side panel live.
-  if (selected?.startsWith("s:") && ev.server === selected.slice(2)) renderCalls(liveCalls[ev.server]);
-  else if (selected && !selected.startsWith("s:") && ev.type !== "token") renderPanel();
+  // Keep the inspector live.
+  if ($("drawer").dataset.mode === "inspect" && ev.type !== "token") {
+    if (selected?.startsWith("s:")) { if (ev.server === selected.slice(2)) renderCalls(liveCalls[ev.server]); }
+    else if (selected !== "d:finance" || ev.type === "domain.end" || ev.type === "run.end") renderPanel();
+  }
 }
 
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  ws.onopen = () => { $("status-dot").className = "dot live"; $("status-text").textContent = "ready"; };
+  ws.onopen = () => setStatus(busy ? "working…" : "ready", busy);
   ws.onmessage = (m) => onEvent(JSON.parse(m.data));
   ws.onclose = async () => {
     $("status-dot").className = "dot";
     $("status-text").textContent = "reconnecting…";
-    // If the socket closed because the session expired, go to the login page instead of retrying forever.
-    try { if ((await fetch("/api/graph", { method: "GET" })).status === 401) return toLogin(); } catch {}
+    try { if ((await fetch("/api/graph")).status === 401) return toLogin(); } catch {}
     setTimeout(connect, 1500);
   };
 }
 
-function setBusy(busy) {
-  $("status-dot").className = busy ? "dot busy" : "dot live";
-  $("status-text").textContent = busy ? "working…" : "ready";
+function setStatus(text, working = false) {
+  $("status-dot").className = working ? "dot busy" : "dot live";
+  $("status-text").textContent = text;
 }
 
-// ---------- Sending a query ----------
-
-async function submit(source = "text") {
-  const query = $("query").value.trim();
-  if (!query) return;
-  const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query, source }) });
-  if (r.status === 401) return toLogin();
-  if (!r.ok) alert(await r.text());
-  $("query").value = "";
+function setBusy(b) {
+  busy = b;
+  $("send").disabled = b;
+  $("send").textContent = b ? "Working…" : "Send →";
 }
 
-$("query-form").addEventListener("submit", (e) => { e.preventDefault(); submit("text"); });
+// =====================================================================
+// Profile menu (top right)
+// =====================================================================
 
-// ---------- Voice (Deepgram STT): click mic to start, click again to stop and send ----------
+$("profile-btn").onclick = (e) => {
+  e.stopPropagation();
+  const menu = $("profile-menu");
+  menu.hidden = !menu.hidden;
+  $("profile-btn").setAttribute("aria-expanded", String(!menu.hidden));
+};
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".profile")) { $("profile-menu").hidden = true; $("profile-btn").setAttribute("aria-expanded", "false"); }
+});
+$("logout").onclick = async () => {
+  await fetch("/api/logout", { method: "POST" });
+  store.set("chatId", null);
+  toLogin();
+};
+
+async function loadProfile() {
+  const r = await fetch("/api/me");
+  if (!r.ok) return;
+  const { email } = await r.json();
+  $("profile-email").textContent = email;
+  $("profile-btn").textContent = (email || "M")[0].toUpperCase();
+}
+
+// =====================================================================
+// Voice (Deepgram STT through the server): click the mic to start, again to stop and send
+// =====================================================================
 
 let mic = null; // {stream, recorder, socket, finalText}
 
@@ -592,12 +802,12 @@ async function startMic() {
     socket.onclose = () => {
       const hadMic = !!mic;
       cleanupMic();
-      if (hadMic && $("query").value.trim()) submit("voice");
+      if (hadMic && $("query").value.trim()) sendMessage(undefined, "voice");
     };
-    socket.onerror = () => { $("status-text").textContent = "voice connection failed"; };
+    socket.onerror = () => setStatus("voice connection failed");
   } catch (e) {
     cleanupMic();
-    $("status-text").textContent = `mic error: ${e.message}`;
+    setStatus(`mic error: ${e.message}`);
   }
 }
 
@@ -605,7 +815,7 @@ function stopMic() {
   if (!mic) return;
   mic.recorder?.stop();
   mic.stream.getTracks().forEach((t) => t.stop());
-  if (mic.socket.readyState === 1) mic.socket.send(JSON.stringify({ type: "CloseStream" })); // Deepgram sends final words, then closes
+  if (mic.socket.readyState === 1) mic.socket.send(JSON.stringify({ type: "CloseStream" }));
   else mic.socket.close();
 }
 
@@ -615,11 +825,14 @@ function cleanupMic() {
   $("mic").classList.remove("listening");
 }
 
-// ---------- Start ----------
+// =====================================================================
+// Start
+// =====================================================================
 
-$("logout").addEventListener("click", async () => {
-  await fetch("/api/logout", { method: "POST" });
-  toLogin();
-});
-
-loadGraph().then(() => graphData.domains && connect());
+(async () => {
+  await loadGraph();
+  if (!graphData.domains) return;
+  connect();
+  loadProfile();
+  await loadChat(chatId);
+})();

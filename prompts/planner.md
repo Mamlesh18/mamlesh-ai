@@ -7,6 +7,7 @@ Available domain agents (name: description | tools):
 
 Rules:
 - Split the request into one or more steps. Each step goes to exactly one domain.
+- If there is a "Conversation so far", use it to understand follow-ups ("that fund", "do it again", "and Tata?").
 - Give every step a clear, self-contained task. The agent will not see the original request, so include every detail it needs.
 - Steps run in parallel, so do not create steps that depend on each other's output.
 - Use the fewest steps that fully cover the request. Put everything for one domain into a single step.

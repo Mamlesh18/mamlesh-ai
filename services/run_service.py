@@ -118,21 +118,37 @@ def health() -> dict:
     }
 
 
-def start_run(query: str, source: str = "text") -> str:
-    """Starts a query in the background and returns its run_id straight away."""
+def start_run(query: str, source: str = "text", chat_id: str | None = None) -> tuple[str, str]:
+    """Starts a query in the background and returns (run_id, chat_id) straight away.
+    Without a chat_id a new chat is started."""
     run_id = uuid.uuid4().hex[:12]
-    task = asyncio.create_task(_run(run_id, query, source))
+    chat_id = chat_id or uuid.uuid4().hex[:12]
+    task = asyncio.create_task(_run(run_id, query, source, chat_id))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
-    return run_id
+    return run_id, chat_id
 
 
-async def _run(run_id: str, query: str, source: str):
+HISTORY_TURNS = 6  # how many earlier question/answer pairs of the chat the Orchestrator sees
+
+
+async def _chat_history(chat_id: str) -> str:
+    """The last few turns of this chat, so follow-up questions ("and that fund?") make sense."""
+    if database.db is None:
+        return ""
+    turns = await database.db.runs.find({"chat_id": chat_id, "status": "done"}, {"query": 1, "answer": 1}) \
+        .sort("started_at", -1).limit(HISTORY_TURNS).to_list(HISTORY_TURNS)
+    return "\n\n".join(f"User: {t['query']}\nAssistant: {t['answer'][:800]}" for t in reversed(turns))
+
+
+async def _run(run_id: str, query: str, source: str, chat_id: str):
     started = datetime.now(timezone.utc)
-    await emit(run_id, "run.start", query=query, source=source)
+    await emit(run_id, "run.start", query=query, source=source, chat_id=chat_id)
     usage = {}  # filled in by every LLM call: {agent: {calls, input_tokens, cached_tokens, output_tokens, cost}}
+    history = await _chat_history(chat_id)
     try:
-        out = await system["graph"].ainvoke({"query": query}, config={"configurable": {"run_id": run_id, "usage": usage}})
+        out = await system["graph"].ainvoke({"query": query, "history": history},
+                                            config={"configurable": {"run_id": run_id, "usage": usage}})
         answer, status = out.get("answer", ""), "done"
     except Exception as e:
         log.exception("Run %s failed", run_id)
@@ -149,20 +165,46 @@ async def _run(run_id: str, query: str, source: str):
 
     if database.db is not None:
         await database.db.runs.insert_one({
-            "_id": run_id, "query": query, "source": source, "status": status, "answer": answer,
+            "_id": run_id, "chat_id": chat_id, "query": query, "source": source, "status": status, "answer": answer,
             "usage": usage, "totals": totals, "started_at": started, "ended_at": ended,
         })
+        await database.db.chats.update_one(
+            {"_id": chat_id},
+            {"$set": {"updated_at": ended}, "$setOnInsert": {"title": query[:60], "created_at": started}},
+            upsert=True,
+        )
+
+
+def _run_out(r: dict) -> dict:
+    r["run_id"] = r.pop("_id")
+    r["started_at"] = r["started_at"].isoformat()
+    r["ended_at"] = r["ended_at"].isoformat()
+    return r
 
 
 async def list_runs(limit: int = 20) -> list[dict]:
     if database.db is None:
         return []
     runs = await database.db.runs.find().sort("started_at", -1).limit(limit).to_list(limit)
-    for r in runs:
-        r["run_id"] = r.pop("_id")
-        r["started_at"] = r["started_at"].isoformat()
-        r["ended_at"] = r["ended_at"].isoformat()
-    return runs
+    return [_run_out(r) for r in runs]
+
+
+# ---------- saved chats ----------
+
+async def list_chats(limit: int = 50) -> list[dict]:
+    if database.db is None:
+        return []
+    chats = await database.db.chats.find().sort("updated_at", -1).limit(limit).to_list(limit)
+    return [{"chat_id": c["_id"], "title": c.get("title", "Chat"), "updated_at": c["updated_at"].isoformat()} for c in chats]
+
+
+async def get_chat(chat_id: str) -> dict:
+    """A chat with all its messages (each message = one run: question, answer, tokens and cost)."""
+    if database.db is None:
+        return {"chat_id": chat_id, "title": "Chat", "messages": []}
+    chat = await database.db.chats.find_one({"_id": chat_id}) or {}
+    runs = await database.db.runs.find({"chat_id": chat_id}).sort("started_at", 1).to_list(500)
+    return {"chat_id": chat_id, "title": chat.get("title", "New chat"), "messages": [_run_out(r) for r in runs]}
 
 
 async def run_events(run_id: str) -> list[dict]:

@@ -11,49 +11,61 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
 </head>
 <body>
-  <header>
-    <div class="brand">Mamlesh//OS <small>AGENTS LIVE</small></div>
-    <form id="query-form">
-      <input id="query" placeholder="ASK ANYTHING — OR HIT THE MIC" autocomplete="off">
-      <button type="button" id="mic" title="Speak">🎤 Mic</button>
-      <button type="submit" id="send">Send →</button>
-    </form>
-    <div id="status"><span id="status-dot" class="dot"></span><span id="status-text">connecting…</span></div>
-    <button type="button" id="logout" title="Log out">Log out</button>
-  </header>
+  <!-- Full-screen agent map -->
+  <section id="graph-wrap">
+    <div class="brand-tag">Mamlesh//OS</div>
+    <div class="graph-tools">
+      <button type="button" id="fit">Fit</button>
+      <button type="button" id="collapse">Hide tools</button>
+    </div>
+    <div class="legend">
+      <span class="q">queued</span><span class="run">running</span><span class="ok">done</span><span class="err">error</span>
+      <span class="hint">click the centre node to chat</span>
+    </div>
+    <div id="graph"></div>
+  </section>
 
-  <main>
-    <section class="box" id="graph-wrap">
-      <span class="tag">Agent map</span>
-      <div class="graph-tools">
-        <button type="button" id="fit">Fit</button>
-        <button type="button" id="collapse">Hide tools</button>
+  <!-- Top right: connection status + profile menu -->
+  <div id="topright">
+    <span id="status" title="Connection"><span id="status-dot" class="dot"></span><span id="status-text">connecting…</span></span>
+    <div class="profile">
+      <button type="button" id="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">M</button>
+      <div id="profile-menu" hidden>
+        <div id="profile-email" class="muted">…</div>
+        <button type="button" id="logout">Log out</button>
       </div>
-      <div class="legend">
-        <span class="q">queued</span><span class="run">running</span><span class="ok">done</span><span class="err">error</span>
-      </div>
-      <div id="graph"></div>
-    </section>
-    <aside class="box" id="panel">
-      <span class="tag">Inspector</span>
-      <div id="panel-body"><p class="muted">Click a node. Click an MCP server to fan out its tools.</p></div>
-    </aside>
-  </main>
+    </div>
+  </div>
 
-  <footer>
-    <section class="box">
-      <span class="tag">Answer</span>
-      <div id="answer" class="muted">No query yet.</div>
+  <button type="button" id="chat-fab">Chat →</button>
+
+  <!-- Right drawer: chat (orchestrator) or inspector (any other node) -->
+  <aside id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <span class="tag" id="drawer-title">Chat</span>
+      <div class="drawer-actions">
+        <button type="button" id="history-btn" class="chat-only">History</button>
+        <button type="button" id="new-chat" class="chat-only">+ New</button>
+        <button type="button" id="drawer-close" title="Close">✕</button>
+      </div>
+    </div>
+
+    <section id="chat">
+      <div id="chat-list" hidden></div>
+      <div id="messages"></div>
+      <form id="chat-form">
+        <textarea id="query" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for a new line)" autocomplete="off"></textarea>
+        <div class="chat-buttons">
+          <button type="button" id="mic" title="Speak">🎤</button>
+          <button type="submit" id="send">Send →</button>
+        </div>
+      </form>
     </section>
-    <section class="box">
-      <span class="tag">Cost &amp; tokens</span>
-      <div id="usage" class="muted">Run a query to see tokens and cost per agent.</div>
+
+    <section id="inspector" hidden>
+      <div id="panel-body"></div>
     </section>
-    <section class="box">
-      <span class="tag">Live events</span>
-      <ol id="log"></ol>
-    </section>
-  </footer>
+  </aside>
 
   <script src="app.js"></script>
 </body>
