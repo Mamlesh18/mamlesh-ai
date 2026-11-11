@@ -34,7 +34,11 @@ app = FastAPI(title="Mamlesh AI OS", lifespan=lifespan, docs_url=None, redoc_url
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     if request.url.path in PUBLIC_PATHS or auth.is_valid(request.cookies.get(auth.COOKIE)):
-        return await call_next(request)
+        response = await call_next(request)
+        if not request.url.path.startswith("/api/"):
+            # UI files: browsers must check for a newer version (cheap 304 if unchanged), so deploys show up at once
+            response.headers["Cache-Control"] = "no-cache"
+        return response
     if request.url.path.startswith("/api/"):
         return JSONResponse({"detail": "Not logged in"}, status_code=401)
     return RedirectResponse("/login")

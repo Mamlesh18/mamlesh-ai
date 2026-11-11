@@ -65,6 +65,8 @@ async def setup():
     await db.spans.create_index([("trace_id", 1), ("start", 1)])
     await db.spans.create_index([("kind", 1), ("start", -1)])
     await db.events.create_index("expire_at", expireAfterSeconds=0)
+    await db.eval_results.create_index("expire_at", expireAfterSeconds=0)  # per-case eval details are trace data too
+    await db.eval_results.create_index("eval_id")
     # Events saved before tracing existed have no expiry yet: give them one, so they go too.
     result = await db.events.update_many({"expire_at": {"$exists": False}}, {"$set": {"expire_at": expires_at()}})
     if result.modified_count:
@@ -72,12 +74,13 @@ async def setup():
 
 
 async def delete_all() -> dict:
-    """Delete every trace and live event now (chats and answers are kept)."""
+    """Delete every trace, live event and eval case detail now (chats, answers and eval scorecards are kept)."""
     if database.db is None:
-        return {"spans": 0, "events": 0}
+        return {"spans": 0, "events": 0, "eval_details": 0}
     spans = await database.db.spans.delete_many({})
     events = await database.db.events.delete_many({})
-    return {"spans": spans.deleted_count, "events": events.deleted_count}
+    details = await database.db.eval_results.delete_many({})
+    return {"spans": spans.deleted_count, "events": events.deleted_count, "eval_details": details.deleted_count}
 
 
 async def get_trace(trace_id: str) -> list[dict]:

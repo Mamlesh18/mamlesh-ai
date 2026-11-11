@@ -71,7 +71,12 @@
   <!-- Observability: full-screen dashboard and per-query trace waterfall -->
   <section id="harness" hidden aria-label="Observability">
     <div class="h-head">
-      <div class="h-title"><span class="tag">Observability</span><span id="h-sub" class="muted"></span></div>
+      <div class="h-title"><span class="tag">Observability</span>
+        <div class="h-tabs" role="tablist">
+          <button type="button" role="tab" data-tab="live" class="on">Live</button>
+          <button type="button" role="tab" data-tab="evals">Evals</button>
+        </div>
+        <span id="h-sub" class="muted"></span></div>
       <div class="h-actions">
         <div class="h-range" role="group" aria-label="Time range">
           <button type="button" data-days="1">24 h</button>

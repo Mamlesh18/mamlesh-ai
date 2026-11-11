@@ -291,3 +291,26 @@ form.upload button { background: var(--ink); color: var(--yellow); }
 #tip[hidden] { display: none; }
 #profile-menu #open-harness { width: 100%; }
 @media (max-width: 900px) { .h-grid { grid-template-columns: 1fr; } .hbar { grid-template-columns: 110px 1fr 50px; } }
+
+/* ---------- Evals tab ---------- */
+.h-tabs { display: flex; } .h-tabs button { box-shadow: none; padding: 5px 12px; font-size: 11px; } .h-tabs button + button { border-left: none; }
+.h-tabs button.on { background: var(--ink); color: var(--yellow); }
+.h-range[hidden] { display: none; }
+.ev-form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ev-form input, .ev-form select { padding: 8px 10px; border: var(--line); background: var(--paper); font: 500 13px var(--mono); }
+.ev-form input { flex: 1; min-width: 180px; }
+#ev-run { background: var(--blue); color: #fff; }
+#ev-progress { margin-top: 10px; } #ev-progress[hidden] { display: none; }
+#ev-progress .progress span { background: var(--c-llm); }
+table.usage td small { display: block; font: 500 10px var(--mono); color: var(--muted); font-weight: 500; }
+tr.clickable { cursor: pointer; } tr.clickable:hover td { background: #fff7cc; }
+#ev-compare { margin-top: 10px; }
+.ev-cases summary { font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.ev-cases table { margin-top: 10px; } .ev-cases td { text-align: left !important; vertical-align: top; white-space: normal; }
+.ev-cases-t td:nth-child(3) { text-align: left; white-space: normal; }
+.ok-mark { color: #008a4a; font-weight: 700; } .bad-mark { color: var(--red); font-weight: 700; }
+.case-detail td { text-align: left !important; background: var(--bg); white-space: normal; }
+.case-detail pre { white-space: pre-wrap; font: 12px/1.5 var(--sans); background: var(--paper); border: 2px solid var(--ink); padding: 8px; margin: 4px 0; }
+.case-detail p { margin: 4px 0; }
+ul.checks { margin: 6px 0 0; padding-left: 4px; list-style: none; font-size: 12px; } ul.checks li { margin: 2px 0; }
+.ev-cases-t td:nth-child(2), .ev-cases-t th:nth-child(2), .ev-runs td:nth-child(2), .ev-runs th:nth-child(2) { text-align: left; }

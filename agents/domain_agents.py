@@ -6,6 +6,7 @@
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
+from harness import sandbox
 from prompts import load_prompt
 from tools import CUSTOM_TOOLS
 from utils.cost import context_size
@@ -41,6 +42,7 @@ def build_domain_agents(mcp_tools: dict) -> tuple[dict, dict, dict]:
         for t in CUSTOM_TOOLS.get(domain, []):
             tools.append(t)
             owner[t.name] = "custom"
+        tools = [sandbox.guard(t) for t in tools]  # write tools do nothing while evals run
 
         prompt = load_prompt(domain).replace("{memory_dir}", str(MEMORY_DIR)).replace("{root_dir}", str(ROOT_DIR))
         agents[domain] = create_agent(llm, tools=tools, system_prompt=prompt)

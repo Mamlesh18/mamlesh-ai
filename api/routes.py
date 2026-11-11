@@ -130,6 +130,44 @@ async def harness_delete_traces():
     return await tracing.delete_all()
 
 
+class EvalRequest(BaseModel):
+    label: str = ""
+    tags: list[str] | None = None  # only cases with one of these tags
+    ids: list[str] | None = None   # only these cases
+
+
+@router.get("/api/harness/evals/cases")
+def harness_eval_cases():
+    """The test set (harness/evals/cases.yaml)."""
+    from harness.evals import runner
+    return runner.load_cases()
+
+
+@router.post("/api/harness/evals")
+async def harness_start_eval(body: EvalRequest):
+    """Start an eval run in the background (sandbox mode: nothing is written or sent)."""
+    from harness.evals import runner
+    try:
+        return {"eval_id": await runner.start(body.label, body.tags, body.ids)}
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/api/harness/evals")
+async def harness_list_evals():
+    from harness.evals import runner
+    return {"running": runner.current["eval_id"], "runs": await runner.list_runs()}
+
+
+@router.get("/api/harness/evals/{eval_id}")
+async def harness_get_eval(eval_id: str):
+    from harness.evals import runner
+    run = await runner.get_run(eval_id)
+    if not run:
+        raise HTTPException(404, "Eval run not found")
+    return run
+
+
 class SendDraftRequest(BaseModel):
     to: str
     subject: str

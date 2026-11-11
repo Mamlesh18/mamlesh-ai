@@ -17,6 +17,7 @@ from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from agents.domain_agents import DOMAINS
+from harness.sandbox import SANDBOX
 from harness.tracing import end_span, start_span
 from prompts import load_prompt
 from services.events import emit
@@ -102,7 +103,8 @@ class AgentEvents(AsyncCallbackHandler):
         if isinstance(text, list):  # MCP tools return content blocks; keep just the text
             text = "\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in text)
         if run_id in self.spans:
-            end_span(self.spans.pop(run_id), result_chars=len(str(text)))
+            extra = {"result_preview": str(text)[:8000]} if SANDBOX.get() else {}  # evals only: evidence for the judge
+            end_span(self.spans.pop(run_id), result_chars=len(str(text)), **extra)
         await emit(self.run_id, "tool.end", **self._info(tool),
                    result=str(text)[:2000], duration_ms=int((time.perf_counter() - started) * 1000))
 

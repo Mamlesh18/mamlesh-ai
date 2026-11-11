@@ -20,6 +20,8 @@ main_loop: asyncio.AbstractEventLoop | None = None  # set at startup
 
 
 async def emit(run_id: str, type: str, **data):
+    if run_id.startswith("eval-"):  # eval runs are scored from their own trace; keep them out of the live view
+        return
     event = {"run_id": run_id, "type": type, "ts": datetime.now(timezone.utc).isoformat(), **data}
 
     # Sync tools run in a worker thread with their own event loop. WebSockets and MongoDB only work

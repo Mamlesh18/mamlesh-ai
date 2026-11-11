@@ -726,6 +726,8 @@ function eventKind(ev) {
 }
 
 function onEvent(ev) {
+  if (ev.type === "eval.progress") { if (harnessTab === "evals" && !$("harness").hidden) evalProgress(ev); return; }
+  if (ev.type === "eval.done") { if (harnessTab === "evals" && !$("harness").hidden && $("ev-form")) loadEvals(); return; }
   if (ev.type === "portfolio.updated") {
     portfolio = undefined;
     if (selected === "d:finance") renderPortfolio(true);
@@ -851,11 +853,21 @@ let harnessDays = 7;
 const ms = (v) => (v == null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`);
 const KIND_LABEL = { run: "Query", planner: "Step", agent: "Step", synthesizer: "Step", llm: "LLM call", tool: "Tool call" };
 
+let harnessTab = "live";
+
 function openHarness() {
   $("profile-menu").hidden = true;
   $("harness").hidden = false;
-  loadHarness();
+  showTab(harnessTab);
 }
+
+function showTab(tab) {
+  harnessTab = tab;
+  document.querySelectorAll(".h-tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  document.querySelector(".h-range").hidden = tab !== "live";
+  tab === "live" ? loadHarness() : loadEvals();
+}
+document.querySelectorAll(".h-tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
 function closeHarness() { $("harness").hidden = true; hideTip(); }
 $("open-harness").onclick = openHarness;
 $("harness-close").onclick = closeHarness;
@@ -872,6 +884,7 @@ async function loadHarness() {
   const r = await fetch(`/api/harness/metrics?days=${harnessDays}`);
   if (r.status === 401) return toLogin();
   const m = await r.json();
+  if (harnessTab !== "live") return; // the user switched tabs while this was loading
   if (!m.available) { body.innerHTML = `<p class="muted">MongoDB is not connected, so there are no traces.</p>`; return; }
   const k = m.kpis;
   $("h-sub").textContent = `last ${m.days === 1 ? "24 hours" : `${m.days} days`} · ${k.queries} queries`;
@@ -943,7 +956,7 @@ function runList(rows, by) {
 function retentionHtml(m) {
   return `<section class="h-card h-retention">
     <h4>Data retention</h4>
-    <p>Traces and step-by-step events are <b>deleted automatically after ${m.retention_days} days</b>. Your chats and answers are kept.</p>
+    <p>Traces, step-by-step events and eval answers are <b>deleted automatically after ${m.retention_days} days</b>. Your chats, their answers and eval scores are kept.</p>
     <p class="muted">${m.stored_spans} spans stored${m.oldest_trace ? ` · oldest from ${new Date(m.oldest_trace).toLocaleString()}` : ""}</p>
     <button type="button" id="delete-traces">Delete all traces now</button> <span id="delete-status" class="muted"></span>
   </section>`;
@@ -1009,6 +1022,193 @@ async function openTrace(runId) {
       </div>
     </section>`;
   $("h-back").onclick = loadHarness;
+}
+
+// ---------- Evals tab ----------
+
+let evalCompare = new Set();   // two eval ids to compare
+let evalCases = null;          // the test set (cached)
+const pctTxt = (r) => (r?.rate == null ? "–" : `${r.rate}%`);
+const passIcon = (ok) => (ok ? `<span class="ok-mark" title="passed">✓</span>` : `<span class="bad-mark" title="failed">✗</span>`);
+
+async function loadEvals() {
+  const body = $("harness-body");
+  body.innerHTML = `<p class="muted">Loading…</p>`;
+  const [r, rc] = await Promise.all([fetch("/api/harness/evals"), evalCases ? null : fetch("/api/harness/evals/cases")]);
+  if (r.status === 401) return toLogin();
+  const { running, runs } = await r.json();
+  if (rc) evalCases = await rc.json();
+  if (harnessTab !== "evals") return; // the user switched tabs while this was loading
+  const tags = [...new Set(evalCases.flatMap((c) => c.tags || []))].sort();
+  $("h-sub").textContent = `${evalCases.length} test cases · ${runs.length} runs`;
+  const runRow = (x) => {
+    const s = x.summary;
+    return `<tr data-eval="${esc(x.eval_id)}" class="clickable">
+      <td><input type="checkbox" data-cmp="${esc(x.eval_id)}" ${evalCompare.has(x.eval_id) ? "checked" : ""} ${x.status !== "done" ? "disabled" : ""} aria-label="compare"></td>
+      <td>${esc(x.label)}<small>${new Date(x.started_at).toLocaleString()} · prompts ${esc(x.prompts)}</small></td>
+      ${x.status !== "done" ? `<td colspan="7" class="muted">${x.status === "running" ? `running… ${x.done}/${x.total}` : esc(x.status)}</td>` : `
+      <td><b>${s.pass_rate}%</b> <small>${s.passed}/${s.cases}</small></td><td>${pctTxt(s.routing)}</td><td>${pctTxt(s.tools)}</td>
+      <td>${pctTxt(s.judge)}<small>avg ${s.judge_avg_score ?? "–"}/5</small></td><td>${ms(s.p50_ms)}<small>p95 ${ms(s.p95_ms)}</small></td>
+      <td>${tok(s.avg_tokens)}</td><td>${usd(s.avg_cost)}</td>`}
+    </tr>`;
+  };
+  body.innerHTML = `
+    <section class="h-card ev-start">
+      <h4>Run the test set</h4>
+      <p class="muted">Runs every case against your real agents in <b>sandbox mode</b>: anything that would write, send, pay or delete only reports what it would have done. Takes a few minutes and costs a few cents.</p>
+      <form id="ev-form" class="ev-form">
+        <input id="ev-label" placeholder="Label, e.g. baseline" autocomplete="off">
+        <select id="ev-tag" aria-label="Only cases tagged"><option value="">All ${evalCases.length} cases</option>${tags.map((t) => `<option>${esc(t)}</option>`).join("")}</select>
+        <button type="submit" id="ev-run" ${running ? "disabled" : ""}>${running ? "Running…" : "Run evals →"}</button>
+      </form>
+      <div id="ev-progress" ${running ? "" : "hidden"}><div class="progress"><span style="width:0%"></span><em>starting…</em></div></div>
+    </section>
+    <section class="h-card">
+      <h4>Runs ${runs.length > 1 ? `<span class="muted">tick two to compare</span>` : ""}</h4>
+      ${runs.length ? `<table class="usage ev-runs"><tr><th></th><th>run</th><th>pass</th><th>routing</th><th>tools</th><th>judge</th><th>latency</th><th>tokens/q</th><th>cost/q</th></tr>
+        ${runs.map(runRow).join("")}</table>
+        <button type="button" id="ev-compare" ${evalCompare.size === 2 ? "" : "disabled"}>Compare selected</button>` : `<p class="muted">No runs yet. Start the first one above - it becomes your baseline.</p>`}
+    </section>
+    <details class="h-card ev-cases"><summary>Test set (${evalCases.length} cases) - harness/evals/cases.yaml</summary>
+      <table class="usage"><tr><th>case</th><th>question</th><th>expects</th></tr>
+        ${evalCases.map((c) => `<tr><td>${esc(c.id)}<small>${esc((c.tags || []).join(", "))}</small></td><td>${esc(c.query)}${c.history ? "<small>(with earlier chat turns)</small>" : ""}</td><td>${expectText(c.expect || {})}</td></tr>`).join("")}
+      </table></details>`;
+  $("ev-form").onsubmit = startEval;
+  body.querySelectorAll("tr[data-eval]").forEach((tr) => (tr.onclick = (e) => { if (!e.target.matches("input")) openEval(tr.dataset.eval); }));
+  body.querySelectorAll("input[data-cmp]").forEach((cb) => (cb.onchange = () => {
+    cb.checked ? evalCompare.add(cb.dataset.cmp) : evalCompare.delete(cb.dataset.cmp);
+    if (evalCompare.size > 2) { evalCompare.delete([...evalCompare][0]); loadEvals(); return; }
+    $("ev-compare").disabled = evalCompare.size !== 2;
+  }));
+  if ($("ev-compare")) $("ev-compare").onclick = () => compareEvals(...evalCompare);
+  if (running) $("ev-progress").hidden = false;
+}
+
+function expectText(x) {
+  const parts = [];
+  if (x.no_domains) parts.push("no agent");
+  if (x.domains) parts.push(`agent: ${x.domains.join(" + ")}${x.only_domains ? " only" : ""}`);
+  if (x.tools_all) parts.push(`tools: ${x.tools_all.join(", ")}`);
+  if (x.tools_any) parts.push(`any of: ${x.tools_any.join(", ")}`);
+  if (x.tools_none) parts.push(`never: ${x.tools_none.join(", ")}`);
+  if (x.contains_all || x.contains_any) parts.push(`text: ${(x.contains_all || x.contains_any).join(", ")}`);
+  if (x.not_contains || x.not_regex) parts.push("forbidden text");
+  if (x.judge) parts.push(`<i>judge:</i> ${esc(x.judge)}`);
+  return parts.join("<br>");
+}
+
+async function startEval(e) {
+  e.preventDefault();
+  const tag = $("ev-tag").value;
+  $("ev-run").disabled = true;
+  const r = await fetch("/api/harness/evals", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label: $("ev-label").value.trim(), tags: tag ? [tag] : null }) });
+  if (r.status === 401) return toLogin();
+  if (!r.ok) { alert((await r.json()).detail); $("ev-run").disabled = false; return; }
+  loadEvals();
+}
+
+function evalProgress(ev) {
+  const box = $("ev-progress");
+  if (!box) return;
+  box.hidden = false;
+  box.querySelector("span").style.width = `${Math.round((ev.done / ev.total) * 100)}%`;
+  box.querySelector("em").textContent = `${ev.done}/${ev.total} · last: ${ev.case_id} ${ev.passed ? "✓" : "✗"}`;
+}
+
+async function openEval(id) {
+  const body = $("harness-body");
+  body.innerHTML = `<p class="muted">Loading…</p>`;
+  const r = await fetch(`/api/harness/evals/${id}`);
+  if (r.status === 401) return toLogin();
+  const run = await r.json();
+  const s = run.summary;
+  $("h-sub").textContent = `eval · ${run.label}`;
+  if (!s) { body.innerHTML = `<p><button type="button" id="h-back">← Evals</button></p><p class="muted">This run is ${esc(run.status)}.</p>`; $("h-back").onclick = loadEvals; return; }
+  const tile = (v, label, sub = "") => `<div class="stat"><b>${v}</b><span>${label}</span>${sub ? `<small>${sub}</small>` : ""}</div>`;
+  const tagRows = Object.entries(s.by_tag).map(([t, v]) => {
+    const p = Math.round((v.passed / v.of) * 100);
+    return `<div class="hbar" data-tip="${esc(t)}: ${v.passed} of ${v.of} passed"><span class="hbar-label">${esc(t)}</span>
+      <span class="hbar-track"><span style="width:${p}%"></span></span><span class="hbar-val">${v.passed}/${v.of}</span></div>`;
+  }).join("");
+  const hasDetails = Object.keys(run.details).length > 0;
+  const rows = run.cases.slice().sort((a, b) => a.passed - b.passed).map((c) => {
+    const d = run.details[c.case_id];
+    return `<tr class="clickable" data-case="${esc(c.case_id)}"><td>${passIcon(c.passed)}</td><td>${esc(c.case_id)}</td>
+      <td>${c.failed.length ? `<span class="down">${esc(c.failed.join(", "))}</span>` : "–"}</td>
+      <td>${c.judge_score ? `${c.judge_score}/5` : "–"}</td><td>${ms(c.latency_ms)}</td><td>${tok(c.tokens)}</td><td>${usd(c.cost)}</td></tr>
+      ${d ? `<tr class="case-detail" data-for="${esc(c.case_id)}" hidden><td></td><td colspan="6">
+        <p><b>Q:</b> ${esc(d.query)}</p>
+        <p><b>Agents:</b> ${esc(d.planned.join(", ") || "none")} · <b>Tools:</b> ${esc(d.tools.join(", ") || "none")}</p>
+        <p><b>Answer:</b></p><pre>${esc(d.answer || d.error || "")}</pre>
+        <ul class="checks">${Object.entries(d.checks).map(([n, ch]) => `<li>${passIcon(ch.passed)} <b>${esc(n)}</b> ${esc(ch.detail)}</li>`).join("")}</ul>
+      </td></tr>` : ""}`;
+  }).join("");
+  body.innerHTML = `
+    <p><button type="button" id="h-back">← Evals</button></p>
+    <div class="h-kpis">
+      ${tile(`${s.pass_rate}%`, "cases passed", `${s.passed} of ${s.cases}`)}
+      ${tile(pctTxt(s.routing), "right agents", `${s.routing.passed}/${s.routing.of}`)}
+      ${tile(pctTxt(s.tools), "right tools", `${s.tools.passed}/${s.tools.of}`)}
+      ${tile(pctTxt(s.judge), "judge passed", `avg ${s.judge_avg_score ?? "–"}/5`)}
+      ${tile(ms(s.p50_ms), "typical time", `p95 ${ms(s.p95_ms)}`)}
+      ${tile(tok(s.avg_tokens), "tokens per case", `${s.avg_llm_calls} LLM calls`)}
+      ${tile(usd(s.avg_cost), "cost per case", `run ${usd(s.total_cost)} + judge ${usd(s.judge_cost)}`)}
+    </div>
+    <div class="h-grid">
+      <section class="h-card"><h4>Pass rate by tag</h4>${tagRows}</section>
+      <section class="h-card"><h4>Run</h4><p>${esc(run.label)} · ${new Date(run.started_at).toLocaleString()}</p>
+        <p class="muted">model ${esc(run.model)} · prompts version ${esc(run.prompts)}</p>
+        ${hasDetails ? "" : `<p class="muted">Answers and tool details were deleted after the ${7}-day retention; the scores are kept.</p>`}</section>
+    </div>
+    <section class="h-card"><h4>Cases <span class="muted">(failures first - click a row for the answer and checks)</span></h4>
+      <table class="usage ev-cases-t"><tr><th></th><th>case</th><th>failed checks</th><th>judge</th><th>time</th><th>tokens</th><th>cost</th></tr>${rows}</table>
+    </section>`;
+  $("h-back").onclick = loadEvals;
+  body.querySelectorAll("tr[data-case]").forEach((tr) => (tr.onclick = () => {
+    const det = body.querySelector(`tr[data-for="${CSS.escape(tr.dataset.case)}"]`);
+    if (det) det.hidden = !det.hidden;
+  }));
+}
+
+async function compareEvals(a, b) {
+  const [ra, rb] = await Promise.all([a, b].map((id) => fetch(`/api/harness/evals/${id}`).then((r) => r.json())));
+  const [older, newer] = new Date(ra.started_at) < new Date(rb.started_at) ? [ra, rb] : [rb, ra];
+  const so = older.summary, sn = newer.summary;
+  // lower is better for time, tokens and cost; higher is better for the rates
+  const line = (label, o, n, fmtv, lowerBetter) => {
+    const delta = n != null && o != null ? n - o : null;
+    const better = delta == null || delta === 0 ? "" : (delta < 0) === lowerBetter ? "up" : "down";
+    const arrow = delta == null || delta === 0 ? "=" : delta > 0 ? "▲" : "▼";
+    return `<tr><td>${label}</td><td>${fmtv(o)}</td><td>${fmtv(n)}</td><td class="${better}">${arrow} ${delta == null ? "" : fmtv(Math.abs(delta))}</td></tr>`;
+  };
+  const p = (v) => (v == null ? "–" : `${v}%`);
+  const caseMap = (r) => Object.fromEntries(r.cases.map((c) => [c.case_id, c]));
+  const co = caseMap(older), cn = caseMap(newer);
+  const fixed = Object.keys(cn).filter((k) => co[k] && !co[k].passed && cn[k].passed);
+  const broke = Object.keys(cn).filter((k) => co[k] && co[k].passed && !cn[k].passed);
+  $("h-sub").textContent = `compare · ${older.label} → ${newer.label}`;
+  $("harness-body").innerHTML = `
+    <p><button type="button" id="h-back">← Evals</button></p>
+    <div class="h-grid">
+      <section class="h-card"><h4>${esc(older.label)} → ${esc(newer.label)}</h4>
+        <table class="usage"><tr><th>metric</th><th>before</th><th>after</th><th>change</th></tr>
+          ${line("Cases passed", so.pass_rate, sn.pass_rate, p, false)}
+          ${line("Right agents", so.routing.rate, sn.routing.rate, p, false)}
+          ${line("Right tools", so.tools.rate, sn.tools.rate, p, false)}
+          ${line("Judge passed", so.judge.rate, sn.judge.rate, p, false)}
+          ${line("Typical time (p50)", so.p50_ms, sn.p50_ms, ms, true)}
+          ${line("Slow time (p95)", so.p95_ms, sn.p95_ms, ms, true)}
+          ${line("Tokens per case", so.avg_tokens, sn.avg_tokens, tok, true)}
+          ${line("LLM calls per case", so.avg_llm_calls, sn.avg_llm_calls, (v) => (v == null ? "–" : String(Math.round(v * 100) / 100)), true)}
+          ${line("Cost per case", so.avg_cost, sn.avg_cost, usd, true)}
+        </table>
+        <p class="muted small">prompts ${esc(older.prompts)} → ${esc(newer.prompts)}</p></section>
+      <section class="h-card"><h4>Case changes</h4>
+        <p><b class="up">Fixed (${fixed.length}):</b> ${fixed.map(esc).join(", ") || "none"}</p>
+        <p><b class="down">Newly failing (${broke.length}):</b> ${broke.map(esc).join(", ") || "none"}</p></section>
+    </div>`;
+  $("h-back").onclick = loadEvals;
 }
 
 // Shared tooltip for the dashboard (any element with data-tip).
