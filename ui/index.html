@@ -32,6 +32,7 @@
       <button type="button" id="profile-btn" aria-haspopup="true" aria-expanded="false" title="Profile">M</button>
       <div id="profile-menu" hidden>
         <div id="profile-email" class="muted">…</div>
+        <button type="button" id="open-harness">Observability</button>
         <button type="button" id="logout">Log out</button>
       </div>
     </div>
@@ -66,6 +67,22 @@
       <div id="panel-body"></div>
     </section>
   </aside>
+
+  <!-- Observability: full-screen dashboard and per-query trace waterfall -->
+  <section id="harness" hidden aria-label="Observability">
+    <div class="h-head">
+      <div class="h-title"><span class="tag">Observability</span><span id="h-sub" class="muted"></span></div>
+      <div class="h-actions">
+        <div class="h-range" role="group" aria-label="Time range">
+          <button type="button" data-days="1">24 h</button>
+          <button type="button" data-days="7" class="on">7 days</button>
+        </div>
+        <button type="button" id="harness-close" title="Close">✕</button>
+      </div>
+    </div>
+    <div id="harness-body"></div>
+  </section>
+  <div id="tip" role="tooltip" hidden></div>
 
   <script src="app.js"></script>
 </body>

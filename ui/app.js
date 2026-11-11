@@ -305,10 +305,11 @@ function renderBot(rid) {
       <span class="figs">${t.calls ? `${usd(t.cost)} · ${tok((t.input_tokens || 0) + (t.output_tokens || 0))} tok` : running ? "working…" : ""}${t.duration_ms ? ` · ${secs(t.duration_ms)}` : ""}</span>
       <button type="button" data-k="events" class="${r.open.events ? "on" : ""}">Events${r.events ? ` (${r.events.length})` : ""}</button>
       <button type="button" data-k="cost" class="${r.open.cost ? "on" : ""}">Cost</button>
+      ${running ? "" : `<button type="button" data-k="trace" title="Timeline of every step">Trace</button>`}
     </div>
     ${r.open.events ? `<div class="detail">${eventsHtml(r)}</div>` : ""}
     ${r.open.cost ? `<div class="detail">${usageTable(r.usage, r.totals)}</div>` : ""}`;
-  el.querySelectorAll(".meta button").forEach((b) => (b.onclick = () => toggleDetail(rid, b.dataset.k)));
+  el.querySelectorAll(".meta button").forEach((b) => (b.onclick = () => (b.dataset.k === "trace" ? openTrace(rid) : toggleDetail(rid, b.dataset.k))));
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
@@ -841,6 +842,189 @@ function setBusy(b) {
   $("send").disabled = b;
   $("send").textContent = b ? "Working…" : "Send →";
 }
+
+// =====================================================================
+// Observability (harness): dashboard + trace waterfall. Traces live in MongoDB and expire after N days.
+// =====================================================================
+
+let harnessDays = 7;
+const ms = (v) => (v == null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`);
+const KIND_LABEL = { run: "Query", planner: "Step", agent: "Step", synthesizer: "Step", llm: "LLM call", tool: "Tool call" };
+
+function openHarness() {
+  $("profile-menu").hidden = true;
+  $("harness").hidden = false;
+  loadHarness();
+}
+function closeHarness() { $("harness").hidden = true; hideTip(); }
+$("open-harness").onclick = openHarness;
+$("harness-close").onclick = closeHarness;
+document.querySelectorAll(".h-range button").forEach((b) => (b.onclick = () => {
+  harnessDays = Number(b.dataset.days);
+  document.querySelectorAll(".h-range button").forEach((x) => x.classList.toggle("on", x === b));
+  loadHarness();
+}));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("harness").hidden) closeHarness(); });
+
+async function loadHarness() {
+  const body = $("harness-body");
+  body.innerHTML = `<p class="muted">Loading…</p>`;
+  const r = await fetch(`/api/harness/metrics?days=${harnessDays}`);
+  if (r.status === 401) return toLogin();
+  const m = await r.json();
+  if (!m.available) { body.innerHTML = `<p class="muted">MongoDB is not connected, so there are no traces.</p>`; return; }
+  const k = m.kpis;
+  $("h-sub").textContent = `last ${m.days === 1 ? "24 hours" : `${m.days} days`} · ${k.queries} queries`;
+  if (!k.queries) {
+    body.innerHTML = `<div class="h-empty"><h3>No traces yet</h3><p class="muted">Ask something in the chat - every query is traced here.</p></div>${retentionHtml(m)}`;
+    bindRetention();
+    return;
+  }
+  const tile = (v, label, sub = "") => `<div class="stat"><b>${v}</b><span>${label}</span>${sub ? `<small>${sub}</small>` : ""}</div>`;
+  const maxCost = Math.max(...m.daily.map((d) => d.cost), 0.000001);
+  const maxStep = Math.max(...m.steps.map((s) => s.avg_ms || 0), 1);
+  body.innerHTML = `
+    <div class="h-kpis">
+      ${tile(ms(k.p50_ms), "typical answer time", `p95 ${ms(k.p95_ms)}`)}
+      ${tile(ms(k.ttft_p50_ms), "until the first word", "median")}
+      ${tile(usd(k.cost), "total cost", `${usd(k.avg_cost)} per query`)}
+      ${tile(tok(k.avg_tokens), "tokens per query", `${k.cached_share}% of input cached`)}
+      ${tile(k.avg_llm_calls, "LLM calls per query")}
+      ${tile(`${k.queries ? Math.round((k.errors / k.queries) * 100) : 0}%`, "failed queries", `${k.errors} of ${k.queries}`)}
+    </div>
+    <div class="h-grid">
+      <section class="h-card">
+        <h4>Cost per day</h4>
+        <div class="vbars" role="img" aria-label="Cost per day">
+          ${m.daily.map((d) => `<div class="vbar" data-tip="${esc(d.day)}<br><b>${usd(d.cost)}</b> · ${d.queries} queries">
+            <span style="height:${d.cost ? Math.max(2, (d.cost / maxCost) * 100) : 0}%"></span><em>${esc(d.day.slice(5))}</em></div>`).join("")}
+        </div>
+      </section>
+      <section class="h-card">
+        <h4>Where the time goes <span class="muted">(average per query)</span></h4>
+        ${m.steps.map((s) => `<div class="hbar" data-tip="${esc(s.step)}<br>avg <b>${ms(s.avg_ms)}</b> · p95 ${ms(s.p95_ms)}<br>in ${s.queries} queries">
+          <span class="hbar-label">${esc(s.step)}</span>
+          <span class="hbar-track"><span style="width:${s.avg_ms ? Math.max(1, (s.avg_ms / maxStep) * 100) : 0}%"></span></span>
+          <span class="hbar-val">${ms(s.avg_ms)}</span></div>`).join("")}
+        <p class="muted small">Agents include their tool calls, so the rows overlap.</p>
+      </section>
+    </div>
+    <div class="h-grid">
+      <section class="h-card">
+        <h4>LLM calls by agent</h4>
+        <table class="usage"><tr><th>agent</th><th>calls</th><th>avg</th><th>p95</th><th title="Average input tokens per call">in/call</th><th>cached</th><th>cost</th></tr>
+          ${m.agents.map((a) => `<tr><td>${esc(a.agent)}</td><td>${a.calls}</td><td>${ms(a.avg_ms)}</td><td>${ms(a.p95_ms)}</td><td>${tok(a.avg_input_tokens)}</td><td>${a.cached_share}%</td><td>${usd(a.cost)}</td></tr>`).join("")}
+        </table>
+      </section>
+      <section class="h-card">
+        <h4>Tool calls <span class="muted">(slowest first)</span></h4>
+        <table class="usage"><tr><th>tool</th><th>calls</th><th>errors</th><th>avg</th><th>p95</th><th title="Average size of the tool result">result</th></tr>
+          ${m.tools.map((t) => `<tr><td>${esc(t.tool)}</td><td>${t.calls}</td><td class="${t.errors ? "down" : ""}">${t.errors}</td><td>${ms(t.avg_ms)}</td><td>${ms(t.p95_ms)}</td><td>${t.avg_result_chars == null ? "–" : tok(t.avg_result_chars) + "ch"}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">No tool calls yet.</td></tr>`}
+        </table>
+      </section>
+    </div>
+    <div class="h-grid">
+      <section class="h-card"><h4>Slowest queries</h4>${runList(m.slowest, "time")}</section>
+      <section class="h-card"><h4>Most expensive queries</h4>${runList(m.expensive, "cost")}</section>
+    </div>
+    ${retentionHtml(m)}`;
+  body.querySelectorAll("[data-run]").forEach((b) => (b.onclick = () => openTrace(b.dataset.run)));
+  bindRetention();
+}
+
+function runList(rows, by) {
+  if (!rows.length) return `<p class="muted">Nothing yet.</p>`;
+  return `<ol class="runlist">${rows.map((r) => `<li><button type="button" data-run="${esc(r.run_id)}">
+    <span class="q">${esc(r.query)}</span>
+    <span class="f">${by === "time" ? `<b>${ms(r.duration_ms)}</b> · ${usd(r.cost)}` : `<b>${usd(r.cost)}</b> · ${ms(r.duration_ms)}`} · ${tok(r.tokens)} tok${r.status !== "ok" ? ` · <span class="down">${esc(r.status)}</span>` : ""}</span>
+  </button></li>`).join("")}</ol>`;
+}
+
+function retentionHtml(m) {
+  return `<section class="h-card h-retention">
+    <h4>Data retention</h4>
+    <p>Traces and step-by-step events are <b>deleted automatically after ${m.retention_days} days</b>. Your chats and answers are kept.</p>
+    <p class="muted">${m.stored_spans} spans stored${m.oldest_trace ? ` · oldest from ${new Date(m.oldest_trace).toLocaleString()}` : ""}</p>
+    <button type="button" id="delete-traces">Delete all traces now</button> <span id="delete-status" class="muted"></span>
+  </section>`;
+}
+
+function bindRetention() {
+  $("delete-traces").onclick = async () => {
+    if (!confirm("Delete all traces and step-by-step events now? Chats and answers are kept. This can't be undone.")) return;
+    const r = await fetch("/api/harness/traces", { method: "DELETE" });
+    if (r.status === 401) return toLogin();
+    const d = await r.json();
+    $("delete-status").textContent = `Deleted ${d.spans} spans and ${d.events} events.`;
+    setTimeout(loadHarness, 1200);
+  };
+}
+
+// One query as a waterfall: every step, LLM call and tool call on a shared timeline.
+async function openTrace(runId) {
+  $("harness").hidden = false;
+  $("profile-menu").hidden = true;
+  const body = $("harness-body");
+  body.innerHTML = `<p class="muted">Loading trace…</p>`;
+  const r = await fetch(`/api/harness/traces/${runId}`);
+  if (r.status === 401) return toLogin();
+  const spans = await r.json();
+  if (!spans.length) {
+    body.innerHTML = `<p><button type="button" id="h-back">← Dashboard</button></p>
+      <p class="muted">No trace for this query - it ran before tracing existed, or it is older than the retention period.</p>`;
+    $("h-back").onclick = loadHarness;
+    return;
+  }
+  const root = spans.find((s) => s.kind === "run") || spans[0];
+  const total = Math.max(root.duration_ms || 0, ...spans.map((s) => s.offset_ms + (s.duration_ms || 0)), 1);
+  const a = root.attrs;
+  $("h-sub").textContent = `trace · ${ms(total)}`;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => `<span style="left:${f * 100}%">${ms(Math.round(total * f))}</span>`).join("");
+  const tipFor = (s) => {
+    const x = s.attrs;
+    const lines = [`<b>${esc(s.name)}</b>`, `${ms(s.duration_ms)} · starts at ${ms(s.offset_ms)}`];
+    if (x.input_tokens != null) lines.push(`${tok(x.input_tokens)} in (${tok(x.cached_tokens || 0)} cached) · ${tok(x.output_tokens)} out · ${usd(x.cost)}`);
+    if (x.result_chars != null) lines.push(`result ${x.result_chars.toLocaleString()} characters`);
+    if (x.ttft_ms != null) lines.push(`first word after ${ms(x.ttft_ms)}`);
+    if (x.task) lines.push(esc(x.task));
+    if (s.error) lines.push(`<span class="down">${esc(s.error)}</span>`);
+    return lines.join("<br>");
+  };
+  body.innerHTML = `
+    <p><button type="button" id="h-back">← Dashboard</button></p>
+    <section class="h-card">
+      <h4>${esc(a.query || "Query")}</h4>
+      <p class="muted">${ms(total)} · ${usd(a.cost)} · ${tok((a.input_tokens || 0) + (a.output_tokens || 0))} tokens · ${a.calls || 0} LLM calls${a.history_chars ? ` · ${tok(a.history_chars)} characters of chat history sent` : ""}</p>
+      <div class="wf-legend"><span><i class="k-step"></i>Step</span><span><i class="k-llm"></i>LLM call</span><span><i class="k-tool"></i>Tool call</span><span><i class="k-run"></i>Whole query</span></div>
+      <div class="wf">
+        <div class="wf-row wf-axis"><span class="wf-name"></span><span class="wf-track">${ticks}</span><span class="wf-ms"></span></div>
+        ${spans.map((s) => {
+          const kind = s.kind === "llm" ? "llm" : s.kind === "tool" ? "tool" : s.kind === "run" ? "run" : "step";
+          const left = (s.offset_ms / total) * 100, width = Math.max(0.4, ((s.duration_ms || 0) / total) * 100);
+          return `<div class="wf-row${s.status === "error" ? " err" : ""}" data-tip="${esc(tipFor(s))}">
+            <span class="wf-name" style="padding-left:${s.depth * 14}px" title="${esc(KIND_LABEL[s.kind] || s.kind)}">${esc(s.name)}</span>
+            <span class="wf-track"><span class="wf-bar k-${kind}" style="left:${left}%;width:${width}%"></span></span>
+            <span class="wf-ms">${ms(s.duration_ms)}</span></div>`;
+        }).join("")}
+      </div>
+    </section>`;
+  $("h-back").onclick = loadHarness;
+}
+
+// Shared tooltip for the dashboard (any element with data-tip).
+function hideTip() { $("tip").hidden = true; }
+$("harness").addEventListener("mousemove", (e) => {
+  const t = e.target.closest("[data-tip]");
+  const tip = $("tip");
+  if (!t) return hideTip();
+  tip.innerHTML = t.dataset.tip;
+  tip.hidden = false;
+  const x = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  const y = Math.min(e.clientY + 14, window.innerHeight - tip.offsetHeight - 8);
+  tip.style.left = `${x}px`;
+  tip.style.top = `${y}px`;
+});
+$("harness").addEventListener("mouseleave", hideTip);
 
 // =====================================================================
 // Profile menu (top right)

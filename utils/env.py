@@ -38,6 +38,9 @@ GMAIL_APP_PASSWORD = (os.getenv("APP_PASSWORD") or "").replace(" ", "").strip() 
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Mamlesh")
 EMAIL_SENDS_PER_DAY = int(os.getenv("EMAIL_SENDS_PER_DAY", "30"))
 
+# Agent traces (spans + step-by-step events) are deleted automatically after this many days
+TRACE_RETENTION_DAYS = int(os.getenv("TRACE_RETENTION_DAYS", "7"))
+
 # Your time zone as minutes from UTC (India = +330), used for "today" in the health log
 UTC_OFFSET_MINUTES = int(os.getenv("UTC_OFFSET_MINUTES", "330"))
 

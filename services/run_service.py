@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from agents.domain_agents import DOMAINS, build_domain_agents
 from agents.orchestrator import build_orchestrator
+from harness import tracing
 from mcp_servers import client as mcp_client
 from mcp_servers import oauth
 from mcp_servers.client import load_mcp_tools
@@ -26,6 +27,7 @@ async def startup():
     from services import kb_store
 
     events.main_loop = asyncio.get_running_loop()
+    await tracing.setup()  # TTL indexes: traces and events delete themselves after TRACE_RETENTION_DAYS
     await kb_store.pull_missing()  # e.g. on Render, where kb/ is not in git
     await asyncio.to_thread(brain_tools.sync)  # build/load the FAISS index from kb/ and memory/
     mcp_client.on_auth_expired = auth_expired
@@ -145,19 +147,25 @@ async def _run(run_id: str, query: str, source: str, chat_id: str):
     started = datetime.now(timezone.utc)
     await emit(run_id, "run.start", query=query, source=source, chat_id=chat_id)
     usage = {}  # filled in by every LLM call: {agent: {calls, input_tokens, cached_tokens, output_tokens, cost}}
+    trace = []  # spans of this query (harness/tracing.py), saved in one write at the end
+    root = tracing.start_span(trace, "run", "query", None, span_id=run_id, query=query[:300], chat_id=chat_id, source=source)
     history = await _chat_history(chat_id)
+    error = None
     try:
-        out = await system["graph"].ainvoke({"query": query, "history": history},
-                                            config={"configurable": {"run_id": run_id, "usage": usage}})
+        out = await system["graph"].ainvoke(
+            {"query": query, "history": history},
+            config={"configurable": {"run_id": run_id, "usage": usage, "trace": trace, "root_span": root["_id"]}})
         answer, status = out.get("answer", ""), "done"
     except Exception as e:
         log.exception("Run %s failed", run_id)
-        answer, status = "", "error"
+        answer, status, error = "", "error", str(e)
         await emit(run_id, "run.error", error=str(e))
 
     ended = datetime.now(timezone.utc)
     totals = {k: sum(a[k] for a in usage.values()) for k in ("calls", "input_tokens", "cached_tokens", "output_tokens", "cost")}
     totals["duration_ms"] = int((ended - started).total_seconds() * 1000)
+    tracing.end_span(root, status="ok" if status == "done" else "error", error=error, history_chars=len(history), **totals)
+    await tracing.save(run_id, trace)
     if status == "done":
         await emit(run_id, "run.end", answer=answer, usage=usage, totals=totals)
     log.info("Run %s: %d LLM calls, %d in / %d out tokens, $%.5f", run_id, totals["calls"],

@@ -43,7 +43,8 @@ async def _send(event: dict):
     # Tokens are only for the live view, so they are not saved.
     if database.db is not None and type != "token":
         try:
-            await database.db.events.insert_one(dict(event))
+            from harness.tracing import expires_at  # events are trace data: deleted after the retention period
+            await database.db.events.insert_one({**event, "expire_at": expires_at()})
         except Exception as e:
             log.warning("Could not save event: %s", e)
 

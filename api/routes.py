@@ -107,6 +107,29 @@ async def get_tool_calls(domain: str, server: str):
     return await events.tool_calls(f"{domain}/{server}")
 
 
+# ---------- Observability (harness) ----------
+
+@router.get("/api/harness/metrics")
+async def harness_metrics(days: int = 7):
+    """Latency, cost, tokens, per-agent and per-tool numbers from the stored traces."""
+    from harness import metrics
+    return await metrics.summary(max(1, min(days, 30)))
+
+
+@router.get("/api/harness/traces/{run_id}")
+async def harness_trace(run_id: str):
+    """All spans of one query, for the waterfall view."""
+    from harness import tracing
+    return await tracing.get_trace(run_id)
+
+
+@router.delete("/api/harness/traces")
+async def harness_delete_traces():
+    """Delete all traces and step-by-step events now. Chats and answers are kept."""
+    from harness import tracing
+    return await tracing.delete_all()
+
+
 class SendDraftRequest(BaseModel):
     to: str
     subject: str
