@@ -22,6 +22,7 @@ from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from agents.domain_agents import DOMAINS
+from harness.approvals import CURRENT as RUN_CONTEXT
 from harness.sandbox import SANDBOX
 from harness.tracing import end_span, start_span
 from prompts import load_prompt
@@ -131,6 +132,8 @@ class AgentEvents(AsyncCallbackHandler):
             text = "\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in text)
         if run_id in self.spans:
             extra = {"result_preview": str(text)[:8000]} if SANDBOX.get() else {}  # evals only: evidence for the judge
+            if str(text).startswith("[blocked]"):  # stopped by a guardrail (precheck, or approval refused)
+                extra["blocked"] = True
             end_span(self.spans.pop(run_id), result_chars=len(str(text)), **extra)
         await emit(self.run_id, "tool.end", **self._info(tool),
                    result=str(text)[:2000], duration_ms=int((time.perf_counter() - started) * 1000))
@@ -195,13 +198,17 @@ def build_orchestrator(agents: dict, tool_owner: dict):
         if not state.get("steps"):
             return "synthesize"
         direct = len(state["steps"]) == 1  # one agent: its answer is the final answer
-        return [Send("domain", {"query": state["query"], **step, "direct": direct}) for step in state["steps"]]
+        return [Send("domain", {"query": state["query"], "history": state.get("history", ""), **step, "direct": direct})
+                for step in state["steps"]]
 
     async def domain(step: dict, config: RunnableConfig):
         run_id = config["configurable"]["run_id"]
         name, task, direct = step["domain"], step["task"], step.get("direct", False)
         s = span(config, "agent", f"{name} agent", agent=name, task=task[:300], direct=direct)
         await emit(run_id, "domain.start", domain=name, task=task)
+        # Tools read this: which chat to ask for approval in, and what Mamlesh actually said (for prechecks)
+        RUN_CONTEXT.set({"run_id": run_id, "agent": name, "user_text": step.get("history", "") + " " + step.get("query", ""),
+                         "query": step.get("query", "")})
         try:
             now = datetime.now().strftime("%A, %Y-%m-%d %H:%M")
             out = await agents[name].ainvoke(

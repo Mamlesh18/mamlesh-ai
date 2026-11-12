@@ -277,9 +277,13 @@ function renderMessages() {
     return;
   }
   box.innerHTML = messages.map((rid) => `<div class="msg user">${esc(runs[rid].query)}</div>
-      <div class="msg bot" id="m-${rid}"><div class="bot-main"></div><div class="drafts"></div></div>`).join("")
+      <div class="msg bot" id="m-${rid}"><div class="bot-main"></div><div class="approvals"></div><div class="drafts"></div></div>`).join("")
     + (pendingQuery ? `<div class="msg user">${esc(pendingQuery)}</div><div class="msg bot"><div class="answer"><span class="thinking">sending…</span></div></div>` : "");
-  messages.forEach((rid) => { renderBot(rid); renderDrafts(rid); });
+  if (orphanApprovals.some((a) => a.status === "pending")) {  // waiting requests from a question not shown here
+    box.insertAdjacentHTML("afterbegin", `<div class="msg bot" id="m-orphans"><b>Waiting for your approval</b><div class="approvals"></div></div>`);
+    renderApprovals("orphans");
+  }
+  messages.forEach((rid) => { renderBot(rid); renderApprovals(rid); renderDrafts(rid); });
   box.scrollTop = box.scrollHeight;
 }
 
@@ -311,6 +315,82 @@ function renderBot(rid) {
     ${r.open.cost ? `<div class="detail">${usageTable(r.usage, r.totals)}</div>` : ""}`;
   el.querySelectorAll(".meta button").forEach((b) => (b.onclick = () => (b.dataset.k === "trace" ? window.open(`/observability#trace/${rid}`, "_blank") : toggleDetail(rid, b.dataset.k))));
   if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+// ---------- Approvals: every write waits for Mamlesh's click ----------
+
+let orphanApprovals = [];  // pending requests whose question isn't in the open chat (e.g. after a reload)
+
+function approvalsOf(rid) { return rid === "orphans" ? orphanApprovals : runs[rid]?.approvals; }
+
+function renderApprovals(rid) {
+  const box = $(`m-${rid}`)?.querySelector(".approvals");
+  const list = approvalsOf(rid);
+  if (!box || !list) return;
+  const label = { approved: "✓ Approved", rejected: "✗ Rejected", expired: "Expired - not done" };
+  box.innerHTML = list.map((a) => {
+    const args = esc(JSON.stringify(a.args || {}, null, 2));
+    if (a.status !== "pending") {
+      return `<div class="approval ${esc(a.status)}"><div class="draft-head"><b>${label[a.status] || esc(a.status)}</b>
+        <span class="badge ${a.status === "approved" ? "done" : "disabled"}">${esc(a.server)} · ${esc(a.tool)}</span></div>
+        ${a.note ? `<p class="muted">Your note: ${esc(a.note)}</p>` : ""}
+        <details><summary>details</summary><pre>${args}</pre></details></div>`;
+    }
+    return `<div class="approval" data-id="${esc(a.approval_id)}">
+      <div class="draft-head"><b>⚠ Approval needed</b><span class="badge auth_required">waiting for you</span></div>
+      <p>The <b>${esc(a.agent)}</b> agent wants to run <b>${esc(a.tool)}</b> on <b>${esc(a.server)}</b>${rid === "orphans" && a.query ? ` for “${esc(a.query)}”` : ""}:</p>
+      <pre>${args}</pre>
+      <input class="ap-note" placeholder="Optional note for the agent (e.g. what to change)" autocomplete="off">
+      <div class="draft-actions"><button type="button" class="approve">Approve →</button><button type="button" class="reject">Reject</button></div>
+      <p class="muted ap-msg">Nothing happens until you choose. Expires in 10 minutes.</p>
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".approval[data-id]").forEach((card) => {
+    card.querySelector(".approve").onclick = () => decideApproval(rid, card, true);
+    card.querySelector(".reject").onclick = () => decideApproval(rid, card, false);
+  });
+  updateAttention();
+}
+
+async function decideApproval(rid, card, approved) {
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  card.querySelector(".ap-msg").textContent = approved ? "Approving…" : "Rejecting…";
+  const note = card.querySelector(".ap-note").value.trim();
+  const r = await fetch(`/api/approvals/${card.dataset.id}`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved, note }) });
+  if (r.status === 401) return toLogin();
+  const a = approvalsOf(rid)?.find((x) => x.approval_id === card.dataset.id);
+  if (a) Object.assign(a, r.ok ? { status: approved ? "approved" : "rejected", note } : { status: "expired" });
+  renderApprovals(rid);
+}
+
+function onApprovalEvent(ev) {
+  const r = runs[ev.run_id];
+  if (ev.type === "approval.request") {
+    if (r) { (r.approvals ||= []).push(ev.approval); renderApprovals(ev.run_id); }
+    else { orphanApprovals.push(ev.approval); renderMessages(); }
+    if (r && !document.body.classList.contains("drawer-open")) openChat();  // a decision is needed: show the chat
+  } else {
+    const a = (r?.approvals || []).concat(orphanApprovals).find((x) => x.approval_id === ev.approval_id);
+    if (a) Object.assign(a, { status: ev.status, note: ev.note });
+    if (r) renderApprovals(ev.run_id); else renderMessages();
+  }
+  updateAttention();
+}
+
+function updateAttention() {
+  const waiting = Object.values(runs).some((r) => r.approvals?.some((a) => a.status === "pending"))
+    || orphanApprovals.some((a) => a.status === "pending");
+  $("chat-fab").classList.toggle("attention", waiting);
+  $("chat-fab").textContent = waiting ? "Approval needed →" : "Chat →";
+}
+
+async function loadPendingApprovals() {
+  const r = await fetch("/api/approvals/pending");
+  if (!r.ok) return;
+  orphanApprovals = (await r.json()).filter((a) => !runs[a.run_id]);
+  if (orphanApprovals.length) renderMessages();
+  updateAttention();
 }
 
 // ---------- Email drafts: the agent prepares, Mamlesh reviews, edits and sends ----------
@@ -448,7 +528,7 @@ async function loadChat(id) {
     for (const m of chat.messages) {
       runs[m.run_id] ||= { query: m.query, answer: m.answer, status: m.status, usage: m.usage || {}, totals: m.totals,
                            events: null, open: { events: false, cost: false }, error: m.status === "error" ? "This query failed." : "",
-                           drafts: m.drafts || [] };
+                           drafts: m.drafts || [], approvals: m.approvals || [] };
       messages.push(m.run_id);
     }
     if (!chat.messages.length) { chatId = null; store.set("chatId", null); }
@@ -715,13 +795,17 @@ function describeEvent(ev) {
     "run.error": () => `error: ${ev.error}`,
     "mcp.status": () => `${ev.server} → ${ev.status.replace("_", " ")}`,
     "email.draft": () => `email draft ready for ${ev.draft?.to} (not sent)`,
+    "approval.request": () => `waiting for your approval: ${ev.approval?.server} · ${ev.approval?.tool}`,
+    "approval.result": () => `${ev.tool}: ${ev.status}${ev.note ? ` (${ev.note})` : ""}`,
+    "guard.injection": () => `⚠ ${ev.tool} result tried to instruct the AI - marked as data`,
+    "guard.redacted": () => `removed ${ev.count} secret${ev.count > 1 ? "s" : ""} from ${ev.tool}`,
     "portfolio.updated": () => `new statement: ₹${Number(ev.total_value).toLocaleString("en-IN")} as on ${ev.as_on}`,
   }[ev.type];
   return d ? d() : "";
 }
 
 function eventKind(ev) {
-  if (ev.type === "tool.error" || ev.type === "run.error") return "lt-err";
+  if (ev.type === "tool.error" || ev.type === "run.error" || ev.type === "guard.injection") return "lt-err";
   if (ev.type.startsWith("tool.")) return "lt-tool";
   return ev.type === "usage" ? "lt-cost" : "";
 }
@@ -748,6 +832,7 @@ function onEvent(ev) {
   const r = runs[ev.run_id];
   if (r) {
     if (ev.type === "email.draft") { (r.drafts ||= []).push(ev.draft); renderDrafts(ev.run_id); }
+    if (ev.type === "approval.request" || ev.type === "approval.result") onApprovalEvent(ev);
     if (ev.type === "token") r.answer += ev.text;
     else {
       r.events?.push(ev);
@@ -936,4 +1021,5 @@ function cleanupMic() {
   connect();
   loadProfile();
   await loadChat(chatId);
+  loadPendingApprovals();  // requests still waiting from before a reload
 })();

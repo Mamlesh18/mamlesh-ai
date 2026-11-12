@@ -161,6 +161,7 @@ async function overview(v) {
         </table>
       </section>
     </div>
+    ${guardHtml(m.guardrails)}
     <div class="h-grid">
       <section class="h-card"><h4>Slowest queries</h4>${runList(m.slowest, "time")}</section>
       <section class="h-card"><h4>Most expensive queries</h4>${runList(m.expensive, "cost")}</section>
@@ -168,6 +169,25 @@ async function overview(v) {
     ${retentionHtml(m)}`;
   paintLive();
   bindRetention();
+}
+
+function guardHtml(g) {
+  if (!g) return "";
+  const st = { approved: "up", rejected: "down", expired: "muted", pending: "" };
+  return `<div class="h-grid">
+    <section class="h-card"><h4>Approvals <span class="muted">every write waits for your click</span></h4>
+      <div class="h-kpis mini-kpis">${tile(g.approvals, "asked")}${tile(g.approved, "approved")}${tile(g.rejected, "rejected")}${tile(g.expired, "expired", "no answer in 10 min")}</div>
+      ${g.recent_approvals.length ? `<table class="usage"><tr><th>tool</th><th>server</th><th>decision</th><th>when</th></tr>
+        ${g.recent_approvals.map((a) => `<tr><td>${esc(a.tool)}</td><td>${esc(a.server || "")}</td><td class="${st[a.status] || ""}">${esc(a.status)}</td><td>${ago(a.at)}</td></tr>`).join("")}</table>`
+        : `<p class="muted">No write actions asked for yet.</p>`}
+      ${g.avg_wait_ms ? `<p class="muted small">You took ${ms(g.avg_wait_ms)} on average to decide.</p>` : ""}
+    </section>
+    <section class="h-card"><h4>Protection</h4>
+      <div class="h-kpis mini-kpis">${tile(g.injections, "injection warnings", "tool results that tried to instruct the AI")}${tile(g.secrets_removed, "secrets removed", "keys, tokens, passwords, card numbers")}</div>
+      ${g.recent_injections.length ? `<ul class="checks">${g.recent_injections.map((i) => `<li><span class="bad-mark">!</span> <b>${esc(i.tool)}</b> ${esc((i.found || []).join("; "))} <a href="#trace/${encodeURIComponent(i.run_id)}">trace</a></li>`).join("")}</ul>`
+        : `<p class="muted">Nothing suspicious in tool results.</p>`}
+      <p class="muted small">Email addresses must come from you (this chat or earlier emails) - the agent can't guess them.</p>
+    </section></div>`;
 }
 
 function runList(rows, by) {

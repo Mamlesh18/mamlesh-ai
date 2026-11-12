@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from agents.domain_agents import DOMAINS, build_domain_agents
 from agents.orchestrator import build_orchestrator
-from harness import prompt_registry, tracing
+from harness import approvals, prompt_registry, tracing
 from mcp_servers import client as mcp_client
 from mcp_servers import oauth
 from mcp_servers.client import load_mcp_tools
@@ -28,7 +28,8 @@ async def startup():
 
     events.main_loop = asyncio.get_running_loop()
     await tracing.setup()  # TTL indexes: traces and events delete themselves after TRACE_RETENTION_DAYS
-    await prompt_registry.setup()  # prompt versions: new prompts/*.md text becomes the active version
+    await prompt_registry.setup()
+    await approvals.setup()  # approval requests left pending by a restart are marked expired  # prompt versions: new prompts/*.md text becomes the active version
     await kb_store.pull_missing()  # e.g. on Render, where kb/ is not in git
     await asyncio.to_thread(brain_tools.sync)  # build/load the FAISS index from kb/ and memory/
     mcp_client.on_auth_expired = auth_expired
@@ -235,8 +236,10 @@ async def get_chat(chat_id: str) -> dict:
     chat = await database.db.chats.find_one({"_id": chat_id}) or {}
     runs = [_run_out(r) for r in await database.db.runs.find({"chat_id": chat_id}).sort("started_at", 1).to_list(500)]
     drafts = await mailer.drafts_for_runs([r["run_id"] for r in runs])
+    asks = await approvals.for_runs([r["run_id"] for r in runs])
     for r in runs:
         r["drafts"] = [d for d in drafts if d["run_id"] == r["run_id"]]
+        r["approvals"] = [a for a in asks if a["run_id"] == r["run_id"]]
     return {"chat_id": chat_id, "title": chat.get("title", "New chat"), "messages": runs}
 
 

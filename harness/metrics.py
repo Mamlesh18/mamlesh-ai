@@ -25,6 +25,29 @@ def _local_day(dt: datetime) -> str:
     return (dt.replace(tzinfo=timezone.utc) + timedelta(minutes=UTC_OFFSET_MINUTES)).strftime("%Y-%m-%d")
 
 
+async def _guardrails(since: datetime) -> dict:
+    """Approvals asked/approved/rejected, injection warnings and secrets removed in the period."""
+    db = database.db
+    asks = await db.approvals.find({"created_at": {"$gte": since}},
+                                   {"tool": 1, "server": 1, "status": 1, "wait_ms": 1, "created_at": 1}).to_list(5000)
+    by_status = defaultdict(int)
+    for a in asks:
+        by_status[a["status"]] += 1
+    iso = since.isoformat()
+    injections = await db.events.find({"type": "guard.injection", "ts": {"$gte": iso}},
+                                      {"_id": 0, "tool": 1, "found": 1, "ts": 1, "run_id": 1}).sort("ts", -1).to_list(50)
+    redacted = await db.events.find({"type": "guard.redacted", "ts": {"$gte": iso}}, {"count": 1}).to_list(5000)
+    return {
+        "approvals": len(asks), "approved": by_status["approved"], "rejected": by_status["rejected"],
+        "expired": by_status["expired"], "pending": by_status["pending"],
+        "avg_wait_ms": _avg([a["wait_ms"] for a in asks if a.get("wait_ms") is not None]),
+        "recent_approvals": [{"tool": a["tool"], "server": a.get("server"), "status": a["status"],
+                              "at": a["created_at"].isoformat()} for a in sorted(asks, key=lambda a: a["created_at"], reverse=True)[:8]],
+        "injections": len(injections), "recent_injections": injections[:5],
+        "secrets_removed": sum(r.get("count", 0) for r in redacted),
+    }
+
+
 async def summary(days: int = 7) -> dict:
     if database.db is None:
         return {"available": False}
@@ -123,4 +146,5 @@ async def summary(days: int = 7) -> dict:
         "slowest": [run_row(r) for r in sorted(runs, key=lambda r: -(r["duration_ms"] or 0))[:8]],
         "expensive": [run_row(r) for r in sorted(runs, key=lambda r: -r["attrs"].get("cost", 0))[:8]],
         "recent": [run_row(r) for r in sorted(runs, key=lambda r: r["start"], reverse=True)[:15]],
+        "guardrails": await _guardrails(since),
     }

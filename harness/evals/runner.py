@@ -141,7 +141,9 @@ async def run_case(case: dict, graph) -> dict:
     planner = next((s for s in trace if s["kind"] == "planner"), None)
     planned = (planner or {}).get("attrs", {}).get("steps", [])
     tool_spans = [s for s in trace if s["kind"] == "tool"]
-    tools = [s["attrs"].get("tool") for s in tool_spans]
+    # A call stopped by a guardrail did nothing, so it does not count as "called" for the checks.
+    tools = [s["attrs"].get("tool") for s in tool_spans if not s["attrs"].get("blocked")]
+    blocked = [s["attrs"].get("tool") for s in tool_spans if s["attrs"].get("blocked")]
     def preview(s):  # say when a result was cut, so the judge doesn't mark facts beyond the cut as invented
         text, size = s["attrs"].get("result_preview", ""), s["attrs"].get("result_chars", 0)
         return text + (f"\n[... result cut here; the full result had {size} characters]" if size > len(text) else "")
@@ -160,7 +162,7 @@ async def run_case(case: dict, graph) -> dict:
     return {
         "case_id": case["id"], "tags": case.get("tags", []), "query": case["query"],
         "passed": all(c["passed"] for c in checks.values()),
-        "checks": checks, "planned": planned, "tools": tools, "answer": answer, "error": error,
+        "checks": checks, "planned": planned, "tools": tools, "blocked": blocked, "answer": answer, "error": error,
         "judge_score": verdict["score"] if verdict else None, "judge_cost": verdict["cost"] if verdict else 0,
         "latency_ms": root["duration_ms"], "first_word_ms": root["attrs"].get("first_word_ms"), "tokens": totals["input_tokens"] + totals["output_tokens"],
         "cached_tokens": totals["cached_tokens"], "cost": totals["cost"], "llm_calls": totals["calls"],

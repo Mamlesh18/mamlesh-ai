@@ -233,6 +233,27 @@ async def harness_improve_prompt(name: str, body: PromptImproveRequest):
     return await prompt_improver.suggest(name, body.instructions)
 
 
+class ApprovalRequest(BaseModel):
+    approved: bool
+    note: str = ""
+
+
+@router.get("/api/approvals/pending")
+async def pending_approvals():
+    from harness import approvals
+    return await approvals.pending()
+
+
+@router.post("/api/approvals/{approval_id}")
+def decide_approval(approval_id: str, body: ApprovalRequest):
+    """Mamlesh's answer to an approval card in the chat. The waiting agent continues right away."""
+    from harness import approvals
+    try:
+        return {"status": approvals.decide(approval_id, body.approved, body.note)}
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
 class SendDraftRequest(BaseModel):
     to: str
     subject: str

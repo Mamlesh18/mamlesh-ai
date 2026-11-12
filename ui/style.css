@@ -367,3 +367,15 @@ ul.versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; 
   .p-head { padding: 10px 16px; gap: 8px; } #harness-body { padding: 14px 16px 30px; }
   #h-sub { display: none; }
 }
+
+/* ---------- Guardrails: approval cards (chat) + overview tiles ---------- */
+.mini-kpis { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.mini-kpis .stat b { font-size: 20px; }
+.approvals:empty { display: none; }
+.approval { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border: 3px solid var(--ink); background: #ffe8cc; box-shadow: 3px 3px 0 var(--ink); }
+.approval.approved { background: #dcf7e9; } .approval.rejected, .approval.expired { background: var(--bg); }
+.approval pre { margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11px/1.5 var(--mono); padding: 6px; background: var(--paper); border: 2px solid var(--ink); }
+.approval input { padding: 7px 8px; border: 2px solid var(--ink); background: var(--paper); font: 500 13px var(--sans); }
+.approval .approve { background: var(--green); } .approval .reject { background: var(--paper); }
+.approval p { margin: 0; font-size: 13px; }
+#chat-fab.attention { background: var(--orange); color: var(--ink); animation: nudge 1.2s ease-in-out infinite; }

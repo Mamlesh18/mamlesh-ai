@@ -44,8 +44,11 @@ async def save(trace_id: str, trace: list):
     """Write all spans of one query (unfinished spans are closed as 'unfinished')."""
     if database.db is None or not trace:
         return
+    from harness.guardrails import redact_obj
+
     expiry = expires_at()
     for span in trace:
+        span["attrs"] = redact_obj(span["attrs"])[0]  # no secrets in saved traces
         if span["end"] is None:
             end_span(span, status="unfinished")
         span["trace_id"] = trace_id

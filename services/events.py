@@ -23,6 +23,9 @@ async def emit(run_id: str, type: str, **data):
     if run_id.startswith("eval-"):  # eval runs are scored from their own trace; keep them out of the live view
         return
     event = {"run_id": run_id, "type": type, "ts": datetime.now(timezone.utc).isoformat(), **data}
+    if type != "token":  # no secrets in the live view or the saved events
+        from harness.guardrails import redact_obj
+        event = redact_obj(event)[0]
 
     # Sync tools run in a worker thread with their own event loop. WebSockets and MongoDB only work
     # on the main loop, so hand the event over to it.

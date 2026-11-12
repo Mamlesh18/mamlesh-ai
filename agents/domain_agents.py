@@ -7,7 +7,7 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 
 from agents.tool_selection import KEEP, MIN_TOOLS, ToolSelector
-from harness import sandbox
+from harness import guardrails
 from prompts import load_prompt
 from tools import CUSTOM_TOOLS
 from utils.cost import context_size
@@ -53,7 +53,8 @@ def build_domain_agents(mcp_tools: dict) -> tuple[dict, dict, dict]:
         for t in CUSTOM_TOOLS.get(domain, []):
             tools.append(t)
             owner[t.name] = "custom"
-        tools = [sandbox.guard(t) for t in tools]  # write tools do nothing while evals run
+        # approvals for writes, sandbox in evals, secret removal, injection warnings (harness/guardrails.py)
+        tools = [guardrails.protect(t, owner[t.name]) for t in tools]
 
         prompt = load_prompt(domain).replace("{memory_dir}", str(MEMORY_DIR)).replace("{root_dir}", str(ROOT_DIR))
         # Many tools -> show the model only the ones that fit the task (agents/tool_selection.py)
