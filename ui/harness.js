@@ -36,10 +36,10 @@ function go() {
   route = (location.hash.slice(1) || "overview").split("/").map(decodeURIComponent);
   const sec = { trace: "overview", eval: "evals", compare: "evals", prompt: "prompts" }[route[0]] || route[0];
   document.querySelectorAll(".h-tabs a").forEach((a) => a.classList.toggle("on", a.dataset.sec === sec));
-  document.querySelector(".h-range").hidden = route[0] !== "overview";
+  document.querySelector(".h-range").hidden = !["overview", "guardrails"].includes(route[0]);
   hideTip();
   const v = ++view;
-  const page = { overview: overview, trace: trace, evals: evals, eval: evalRun, compare: compare, prompts: prompts, prompt: promptPage, memory: memoryPage }[route[0]] || overview;
+  const page = { overview: overview, trace: trace, evals: evals, eval: evalRun, compare: compare, prompts: prompts, prompt: promptPage, memory: memoryPage, guardrails: guardrailsPage }[route[0]] || overview;
   body.innerHTML = `<p class="muted">Loading…</p>`;
   page(v, ...route.slice(1)).catch((e) => { if (!(e instanceof LoggedOut) && v === view) body.innerHTML = `<p class="down">${esc(e.message)}</p>`; });
 }
@@ -70,6 +70,7 @@ function connect() {
 }
 
 function onEvent(ev) {
+  if (ev.type?.startsWith("approval.") && route[0] === "guardrails") { clearTimeout(refreshTimer); refreshTimer = setTimeout(go, 400); }
   if (ev.type === "run.start") { live[ev.run_id] = { query: ev.query, started: Date.now() }; paintLive(); }
   if (ev.type === "run.end" || ev.type === "run.error") {
     delete live[ev.run_id];
@@ -104,7 +105,7 @@ setInterval(tickLive, 1000);
 // ---------------------------------------------------------------- overview
 
 async function overview(v) {
-  const m = await api(`/api/harness/metrics?days=${days}`);
+  const [m, sum] = await Promise.all([api(`/api/harness/metrics?days=${days}`), api("/api/harness/summary").catch(() => null)]);
   if (stale(v)) return;
   if (!m.available) { body.innerHTML = `<p class="muted">MongoDB is not connected, so there are no traces.</p>`; return; }
   const k = m.kpis;
@@ -126,8 +127,9 @@ async function overview(v) {
       ${tile(k.avg_llm_calls, "LLM calls per query")}
       ${tile(`${k.queries ? Math.round((k.errors / k.queries) * 100) : 0}%`, "failed queries", `${k.errors} of ${k.queries}`)}
     </div>
+    ${guardStrip(m.guardrails)}
     <div class="h-grid">
-      ${liveCard}
+      <div class="h-col">${liveCard}${evalCard(sum)}</div>
       <section class="h-card"><h4>Latest queries <span class="muted">(click for the timeline)</span></h4>${runList(m.recent || [], "recent")}</section>
     </div>
     <div class="h-grid">
@@ -161,7 +163,6 @@ async function overview(v) {
         </table>
       </section>
     </div>
-    ${guardHtml(m.guardrails)}
     <div class="h-grid">
       <section class="h-card"><h4>Slowest queries</h4>${runList(m.slowest, "time")}</section>
       <section class="h-card"><h4>Most expensive queries</h4>${runList(m.expensive, "cost")}</section>
@@ -169,6 +170,84 @@ async function overview(v) {
     ${retentionHtml(m)}`;
   paintLive();
   bindRetention();
+}
+
+function evalCard(s) {
+  const e = s?.eval;
+  if (!e) return "";
+  const body = e.running ? `<p><span class="pill attn">running</span> ${e.done}/${e.total} cases done</p>`
+    : e.pass_rate != null ? `<div class="eval-mini"><b class="${e.pass_rate >= 90 ? "up" : "down"}">${e.pass_rate}%</b>
+        <span>${e.passed} of ${e.cases} cases passed<br><small class="muted">${esc(e.label)} · ${ago(e.at)}</small></span></div>`
+    : `<p class="muted">No eval run yet.</p>`;
+  return `<section class="h-card"><h4>Latest eval <a class="h4-link" href="#evals">Run or compare →</a></h4>${body}</section>`;
+}
+
+function guardStrip(g) {
+  if (!g) return "";
+  return `<a class="h-card guard-strip" href="#guardrails">
+    <b>Guardrails</b>
+    <span>${g.pending ? `<span class="pill attn">${g.pending} waiting for you</span>` : `<span class="pill ok">all clear</span>`}</span>
+    <span><b>${g.approvals}</b> approvals asked · <b>${g.approved}</b> approved · <b>${g.rejected}</b> rejected</span>
+    <span><b>${g.secrets_removed}</b> secrets hidden · <b>${g.injections}</b> injection warnings</span>
+    <span class="go">Open →</span></a>`;
+}
+
+// ---------------------------------------------------------------- guardrails page
+
+const DECISION = { approved: ["ok", "approved"], rejected: ["bad", "rejected"], expired: ["muted", "expired"], pending: ["attn", "waiting"] };
+
+async function guardrailsPage(v) {
+  const [m, pending] = await Promise.all([api(`/api/harness/metrics?days=${days}`), api("/api/approvals/pending")]);
+  if (stale(v)) return;
+  const g = m.guardrails;
+  sub(`last ${days === 1 ? "24 hours" : `${days} days`}`);
+  const protection = (icon, title, value, text) => `<div class="guard-tile"><span class="gt-icon">${icon}</span>
+    <div><b>${title}</b><em>${value}</em><p>${text}</p></div></div>`;
+  const pendingHtml = pending.length ? `<section class="h-card attn-card"><h4>Waiting for you <span class="muted">the agent is paused until you decide</span></h4>
+    ${pending.map((a) => `<div class="approval" data-id="${esc(a.approval_id)}">
+      <div class="draft-head"><b>${esc(a.agent)} agent wants to run ${esc(a.tool)}</b><span class="badge auth_required">${esc(a.server)}</span></div>
+      ${a.query ? `<p class="muted">For your question: “${esc(a.query)}”</p>` : ""}
+      <pre>${esc(JSON.stringify(a.args || {}, null, 2))}</pre>
+      <input class="ap-note" placeholder="Optional note for the agent" autocomplete="off">
+      <div class="draft-actions"><button type="button" class="approve">Approve →</button><button type="button" class="reject">Reject</button></div>
+    </div>`).join("")}</section>` : "";
+  body.innerHTML = `
+    ${pendingHtml}
+    <section class="guard-tiles">
+      ${protection("✋", "Approvals", `${g.approvals} asked · ${g.approved} approved · ${g.rejected} rejected`, "Anything that writes, sends, pays or deletes waits for your click in the chat. No answer in 10 minutes = not done.")}
+      ${protection("@", "Email addresses", "always on", "The agent can only email addresses you typed, ones in your memory, or ones you emailed before. It can't guess.")}
+      ${protection("🔒", "Secrets hidden", `${g.secrets_removed} removed`, "API keys, tokens, passwords and card numbers are removed from tool results, live events and saved traces.")}
+      ${protection("⚠", "Injection warnings", `${g.injections} flagged`, "Web pages, files or emails that try to give the AI orders are marked as data and not followed.")}
+    </section>
+    <section class="h-card">
+      <h4>Approval history ${g.avg_wait_ms ? `<span class="muted">you take ${ms(g.avg_wait_ms)} on average to decide</span>` : ""}</h4>
+      ${g.recent_approvals.length ? `<table class="usage guard-t"><tr><th>when</th><th>question</th><th>action</th><th>decision</th><th>your note</th><th>took</th></tr>
+        ${g.recent_approvals.map((a) => `<tr><td>${ago(a.at)}</td><td>${esc(a.query || "–")}</td>
+          <td><b>${esc(a.tool)}</b><small>${esc(a.agent || "")} · ${esc(a.server || "")}</small></td>
+          <td><span class="pill ${(DECISION[a.status] || ["", a.status])[0]}">${(DECISION[a.status] || ["", a.status])[1]}</span></td>
+          <td>${esc(a.note || "")}</td><td>${a.wait_ms != null ? ms(a.wait_ms) : "–"}</td></tr>`).join("")}</table>`
+        : `<p class="muted">No write actions yet. When an agent wants to change something, the request shows up in the chat and here.</p>`}
+    </section>
+    <div class="h-grid">
+      <section class="h-card"><h4>Injection warnings</h4>
+        ${g.recent_injections.length ? `<ul class="guard-list">${g.recent_injections.map((i) => `<li><span class="pill attn">${esc(i.tool)}</span> ${esc((i.found || []).join("; "))}
+          <small>${ago(i.ts)} · <a href="#trace/${encodeURIComponent(i.run_id)}">trace</a></small></li>`).join("")}</ul>`
+          : `<p class="muted">Nothing suspicious in tool results.</p>`}</section>
+      <section class="h-card"><h4>Secrets hidden</h4>
+        ${(g.recent_redactions || []).length ? `<ul class="guard-list">${g.recent_redactions.map((r) => `<li><span class="pill ok">${esc(r.tool)}</span> ${r.count} removed
+          <small>${ago(r.ts)} · <a href="#trace/${encodeURIComponent(r.run_id)}">trace</a></small></li>`).join("")}</ul>`
+          : `<p class="muted">No secrets showed up in tool results.</p>`}</section>
+    </div>`;
+  body.querySelectorAll(".approval[data-id]").forEach((card) => {
+    const decide = async (approved) => {
+      card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+      try { await post(`/api/approvals/${card.dataset.id}`, { approved, note: card.querySelector(".ap-note").value.trim() }); }
+      catch (e) { if (!(e instanceof LoggedOut)) alert(e.message); }
+      go();
+    };
+    card.querySelector(".approve").onclick = () => decide(true);
+    card.querySelector(".reject").onclick = () => decide(false);
+  });
 }
 
 function guardHtml(g) {
@@ -693,6 +772,9 @@ async function memoryPage(v) {
     </div>
     <section class="h-card">
       <h4>Personal memory <span class="muted">MemDream · only personal details: ${d.types.map(esc).join(", ")}</span></h4>
+      <form id="mem-add" class="ev-form mem-add"><input id="mem-new" placeholder="Add a fact, e.g. My brother Arun's birthday is 12 June" autocomplete="off">
+        <button type="submit" class="primary">Remember</button></form>
+      <p id="mem-msg" class="muted small"></p>
       <form id="mem-search" class="ev-form"><input id="mem-q" placeholder="Search memories, e.g. sister's email" value="${esc(memQuery)}" autocomplete="off">
         <button type="submit">Search</button>${memQuery ? `<button type="button" id="mem-clear">Show all</button>` : ""}</form>
       ${d.memories.length ? `<table class="usage mem-t"><tr><th>memory</th><th>type</th><th>status</th><th>saved</th><th></th></tr>${d.memories.map(row).join("")}</table>`
@@ -706,6 +788,18 @@ async function memoryPage(v) {
         : `<p class="muted">No decisions yet.</p>`}
     </section>`;
   $("mem-search").onsubmit = (e) => { e.preventDefault(); memQuery = $("mem-q").value.trim(); go(); };
+  $("mem-add").onsubmit = async (e) => {
+    e.preventDefault();
+    const text = $("mem-new").value.trim();
+    if (!text) return;
+    $("mem-msg").textContent = "Saving…";
+    try {
+      const r = await post("/api/harness/memory", { text });
+      $("mem-msg").textContent = { ADD: "Saved as a new memory.", SUPERSEDE: "Saved - it replaced an outdated memory.",
+        MERGE: "Merged into an existing memory.", NOOP: "Already known - nothing changed." }[r.action] || "Saved.";
+      setTimeout(go, 900);
+    } catch (err) { if (!(err instanceof LoggedOut)) $("mem-msg").textContent = err.message; }
+  };
   if ($("mem-clear")) $("mem-clear").onclick = () => { memQuery = ""; go(); };
   body.querySelectorAll("[data-hist]").forEach((b) => (b.onclick = async () => {
     const cell = body.querySelector(`tr[data-histfor="${CSS.escape(b.dataset.hist)}"]`);

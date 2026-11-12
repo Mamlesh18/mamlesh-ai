@@ -108,11 +108,14 @@ async function loadGraph() {
       { selector: "node.done", style: { "background-color": C.green } },
       { selector: "node[kind='orchestrator'].done", style: { "background-color": C.green, color: C.ink, "text-background-color": C.green } },
       { selector: "node.failed", style: { "background-color": C.red } },
+      { selector: "node.waiting", style: { "background-color": C.orange, "border-width": 6, "border-style": "dashed", "border-color": C.ink } },
+      { selector: "node.blocked", style: { "background-color": C.orange } },
       { selector: "node:selected", style: { "border-width": 6, "border-color": C.blue } },
       { selector: "edge", style: { width: 3, "line-color": C.ink, "curve-style": "straight" } },
       { selector: "edge.tool-edge", style: { width: 1.5, "line-color": "#7a7a7a" } },
       { selector: "edge.active", style: { width: 6, "line-color": C.blue, "line-style": "dashed", "line-dash-pattern": [10, 6] } },
       { selector: "edge.done", style: { width: 4, "line-color": C.green } },
+      { selector: "edge.blocked", style: { width: 4, "line-color": C.orange, "line-style": "dashed" } },
     ],
   });
 
@@ -159,13 +162,13 @@ function showTool(serverId) {
 
 function setNode(id, state) {
   const n = cy?.getElementById(id);
-  if (n?.length) n.removeClass("queued running done failed").addClass(state);
+  if (n?.length) n.removeClass("queued running done failed waiting blocked").addClass(state);
 }
 
 function setEdge(target, state) {
   const e = cy?.edges(`[target = "${target}"]`);
   if (!e) return;
-  e.removeClass("active done");
+  e.removeClass("active done blocked");
   if (state) e.addClass(state);
 }
 
@@ -307,14 +310,82 @@ function renderBot(rid) {
     <div class="answer">${r.answer ? formatAnswer(r.answer) : running ? `<span class="thinking">${esc(lastStep)}</span>` : r.status === "error" ? esc(r.error || "Something went wrong.") : ""}</div>
     <div class="meta">
       <span class="figs">${t.calls ? `${usd(t.cost)} · ${tok((t.input_tokens || 0) + (t.output_tokens || 0))} tok` : running ? "working…" : ""}${t.duration_ms ? ` · ${secs(t.duration_ms)}` : ""}</span>
+      ${badgesHtml(r)}
       <button type="button" data-k="events" class="${r.open.events ? "on" : ""}">Events${r.events ? ` (${r.events.length})` : ""}</button>
       <button type="button" data-k="cost" class="${r.open.cost ? "on" : ""}">Cost</button>
       ${running ? "" : `<button type="button" data-k="trace" title="Timeline of every step">Trace</button>`}
     </div>
     ${r.open.events ? `<div class="detail">${eventsHtml(r)}</div>` : ""}
-    ${r.open.cost ? `<div class="detail">${usageTable(r.usage, r.totals)}</div>` : ""}`;
-  el.querySelectorAll(".meta button").forEach((b) => (b.onclick = () => (b.dataset.k === "trace" ? window.open(`/observability#trace/${rid}`, "_blank") : toggleDetail(rid, b.dataset.k))));
+    ${r.open.cost ? `<div class="detail">${usageTable(r.usage, r.totals)}</div>` : ""}
+    ${r.open.memory ? `<div class="detail mem-used"><b>Memories this answer used</b><ul>${(r.memories_used || []).map((m) => `<li>${esc(m)}</li>`).join("")}</ul>
+      <a href="/observability#memory" target="_blank">Manage memory →</a></div>` : ""}
+    ${r.open.guard ? `<div class="detail guard-used">${guardDetail(r)}</div>` : ""}`;
+  el.querySelectorAll(".meta button").forEach((b) => (b.onclick = () => {
+    if (b.dataset.k === "trace") return window.open(`/observability#trace/${rid}`, "_blank");
+    if (b.dataset.k === "memory" || b.dataset.k === "guard") { r.open[b.dataset.k] = !r.open[b.dataset.k]; return renderBot(rid); }
+    toggleDetail(rid, b.dataset.k);
+  }));
   if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+// ---------- Badges on an answer: what the harness did for it ----------
+
+function badgesHtml(r) {
+  const out = [];
+  const n = (r.memories_used || []).length;
+  if (n) out.push(`<button type="button" data-k="memory" class="badge-btn mem${r.open.memory ? " on" : ""}" title="Personal memories given to the planner for this answer">🧠 ${n} memor${n > 1 ? "ies" : "y"}</button>`);
+  const g = r.guard || {};
+  const asked = (r.approvals || []).length;
+  if (g.injections || g.redacted || asked) {
+    const parts = [asked && `${asked} approval${asked > 1 ? "s" : ""}`, g.redacted && `${g.redacted} secret${g.redacted > 1 ? "s" : ""} hidden`,
+      g.injections && `${g.injections} warning${g.injections > 1 ? "s" : ""}`].filter(Boolean);
+    out.push(`<button type="button" data-k="guard" class="badge-btn ${g.injections ? "warn" : "safe"}${r.open.guard ? " on" : ""}" title="Guardrails that acted on this answer">🛡 ${parts.join(" · ")}</button>`);
+  }
+  return out.join("");
+}
+
+function guardDetail(r) {
+  const g = r.guard || {};
+  const rows = [];
+  (r.approvals || []).forEach((a) => rows.push(`<li><b>Approval:</b> ${esc(a.agent)} · ${esc(a.tool)} → <b>${esc(a.status)}</b>${a.note ? ` (“${esc(a.note)}”)` : ""}</li>`));
+  if (g.redacted) rows.push(`<li><b>Secrets hidden:</b> ${g.redacted} key/token/password/card number${g.redacted > 1 ? "s were" : " was"} removed from tool results before the AI saw them.</li>`);
+  if (g.injections) rows.push(`<li><b>Suspicious content:</b> a tool result contained text that tried to instruct the AI. It was marked as data and not followed.</li>`);
+  return `<b>Guardrails on this answer</b><ul>${rows.join("")}</ul><a href="/observability#guardrails" target="_blank">All guardrails →</a>`;
+}
+
+// ---------- Harness rail (top centre of the map) ----------
+
+let railTimer = null;
+async function loadRail() {
+  clearTimeout(railTimer);
+  railTimer = setTimeout(loadRail, 60000);
+  const r = await fetch("/api/harness/summary");
+  if (!r.ok) return;
+  paintRail(await r.json());
+}
+
+function paintRail(s) {
+  const set = (id, value, tone) => {
+    const a = $(id);
+    a.querySelector(".rail-v").textContent = value;
+    a.className = tone || "";
+  };
+  const g = s.guard || {};
+  if (s.pending_approvals) set("rail-guard", `${s.pending_approvals} waiting for you`, "attn");
+  else set("rail-guard", g.approvals || g.secrets_removed || g.injections
+    ? `on · ${[g.approvals && `${g.approvals} asked`, g.secrets_removed && `${g.secrets_removed} hidden`, g.injections && `${g.injections} warned`].filter(Boolean).join(" · ")} today`
+    : "on · all clear", "ok");
+  const e = s.eval;
+  if (e?.running) set("rail-evals", `running ${e.done}/${e.total}`, "busy");
+  else if (e?.pass_rate != null) set("rail-evals", `${e.pass_rate}% · ${e.passed}/${e.cases}`, e.pass_rate >= 90 ? "ok" : e.pass_rate >= 75 ? "attn" : "bad");
+  else set("rail-evals", "not run yet", "");
+  set("rail-memory", s.memory.enabled ? `${s.memory.count} fact${s.memory.count === 1 ? "" : "s"}` : "off", s.memory.enabled ? "" : "bad");
+}
+
+function paintRailEval(ev) {
+  const a = $("rail-evals");
+  a.className = "busy";
+  a.querySelector(".rail-v").textContent = `running ${ev.done}/${ev.total}`;
 }
 
 // ---------- Approvals: every write waits for Mamlesh's click ----------
@@ -366,6 +437,8 @@ async function decideApproval(rid, card, approved) {
 
 function onApprovalEvent(ev) {
   const r = runs[ev.run_id];
+  if (ev.type === "approval.request") setNode(`t:${ev.approval.agent}/${ev.approval.server}/${ev.approval.tool}`, "waiting");
+  loadRail();
   if (ev.type === "approval.request") {
     if (r) { (r.approvals ||= []).push(ev.approval); renderApprovals(ev.run_id); }
     else { orphanApprovals.push(ev.approval); renderMessages(); }
@@ -412,7 +485,7 @@ function renderMemory(rid) {
         body: JSON.stringify({ save, text }) });
       if (r.status === 401) return toLogin();
       const m = list.find((x) => x.id === card.dataset.id);
-      if (r.ok) { const d = await r.json(); Object.assign(m, { status: d.status, action: d.action, text }); }
+      if (r.ok) { const d = await r.json(); Object.assign(m, { status: d.status, action: d.action, text }); loadRail(); }
       else Object.assign(m, { status: "dismissed" });
       renderMemory(rid);
     };
@@ -556,7 +629,8 @@ async function loadChat(id) {
     for (const m of chat.messages) {
       runs[m.run_id] ||= { query: m.query, answer: m.answer, status: m.status, usage: m.usage || {}, totals: m.totals,
                            events: null, open: { events: false, cost: false }, error: m.status === "error" ? "This query failed." : "",
-                           drafts: m.drafts || [], approvals: m.approvals || [], memory: m.memory || [] };
+                           drafts: m.drafts || [], approvals: m.approvals || [], memory: m.memory || [],
+                           memories_used: m.memories_used || [], guard: m.guard || {} };
       messages.push(m.run_id);
     }
     if (!chat.messages.length) { chatId = null; store.set("chatId", null); }
@@ -847,7 +921,11 @@ function eventKind(ev) {
 }
 
 function onEvent(ev) {
-  if (ev.type.startsWith("eval.")) return; // shown on the Observability page
+  if (ev.type.startsWith("eval.")) {  // details on the Observability page; the rail shows progress
+    if (ev.type === "eval.progress") paintRailEval(ev); else loadRail();
+    return;
+  }
+  if (ev.type === "run.end") setTimeout(loadRail, 1500);
   if (ev.type === "chat.title") return;     // the History list reads titles when it opens
   if (ev.type === "portfolio.updated") {
     portfolio = undefined;
@@ -871,6 +949,9 @@ function onEvent(ev) {
     if (ev.type === "email.draft") { (r.drafts ||= []).push(ev.draft); renderDrafts(ev.run_id); }
     if (ev.type === "approval.request" || ev.type === "approval.result") onApprovalEvent(ev);
     if (ev.type === "memory.suggest") { r.memory = ev.suggestions; renderMemory(ev.run_id); }
+    if (ev.type === "memory.recall") r.memories_used = ev.memories;
+    if (ev.type === "guard.injection") (r.guard ||= {}).injections = (r.guard.injections || 0) + 1;
+    if (ev.type === "guard.redacted") (r.guard ||= {}).redacted = (r.guard.redacted || 0) + (ev.count || 0);
     if (ev.type === "token") r.answer += ev.text;
     else {
       r.events?.push(ev);
@@ -917,12 +998,15 @@ function onEvent(ev) {
       activeCalls[ev.server] = Math.max(0, (activeCalls[ev.server] || 1) - 1);
       const list = liveCalls[ev.server] ||= [];
       const i = list.findIndex((c) => c.status === "running" && c.tool === ev.tool && c.run_id === ev.run_id);
-      const call = { ...ev, args: i >= 0 ? list[i].args : null, status: ev.type === "tool.end" ? "done" : "error", key: `${ev.run_id}|${ev.tool}|${ev.ts}` };
+      // A guardrail stopped it (rejected, expired, or a precheck like a guessed email address): orange, not green
+      const blocked = ev.type === "tool.end" && String(ev.result || "").startsWith("[blocked]");
+      const state = blocked ? "blocked" : ev.type === "tool.end" ? "done" : "failed";
+      const call = { ...ev, args: i >= 0 ? list[i].args : null, status: blocked ? "blocked" : ev.type === "tool.end" ? "done" : "error", key: `${ev.run_id}|${ev.tool}|${ev.ts}` };
       if (i >= 0) list[i] = call; else list.unshift(call);
-      setNode(`t:${ev.server}/${ev.tool}`, ev.type === "tool.end" ? "done" : "failed");
-      setEdge(`t:${ev.server}/${ev.tool}`, "done");
+      setNode(`t:${ev.server}/${ev.tool}`, state);
+      setEdge(`t:${ev.server}/${ev.tool}`, blocked ? "blocked" : "done");
       if (!activeCalls[ev.server]) {
-        setNode(`s:${ev.server}`, ev.type === "tool.end" ? "done" : "failed");
+        setNode(`s:${ev.server}`, state);
         setEdge(`s:${ev.server}`, "done");
       }
       break;
@@ -1060,4 +1144,5 @@ function cleanupMic() {
   loadProfile();
   await loadChat(chatId);
   loadPendingApprovals();  // requests still waiting from before a reload
+  loadRail();
 })();

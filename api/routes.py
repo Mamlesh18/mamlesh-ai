@@ -191,12 +191,57 @@ async def harness_get_eval(eval_id: str):
     return run
 
 
+@router.get("/api/harness/summary")
+async def harness_summary():
+    """The three chips on the main screen: guardrails, evals, memory."""
+    from datetime import datetime, timedelta, timezone
+
+    from harness import approvals, memory, metrics
+    from harness.evals import runner
+    from services import db as database
+
+    out = {"pending_approvals": len(await approvals.pending()), "guard": None, "eval": None,
+           "memory": {"enabled": memory.state["enabled"], "count": 0}}
+    if database.db is not None:
+        g = await metrics._guardrails(datetime.now(timezone.utc) - timedelta(days=1))
+        out["guard"] = {k: g[k] for k in ("approvals", "approved", "rejected", "injections", "secrets_removed")}
+        runs = await runner.list_runs(5)
+        running = next((r for r in runs if r["status"] == "running"), None)
+        done = next((r for r in runs if r["status"] == "done"), None)
+        out["eval"] = {"running": bool(running), "done": running and running["done"], "total": running and running["total"],
+                       "label": done and done["label"], "pass_rate": done and done["summary"]["pass_rate"],
+                       "passed": done and done["summary"]["passed"], "cases": done and done["summary"]["cases"],
+                       "at": done and (done.get("finished_at") or done["started_at"])}
+    if memory.state["enabled"]:
+        try:
+            out["memory"]["count"] = (await memory._mem.stats(user_id=memory.USER))["counts"].get("active", 0)
+        except Exception:
+            pass
+    return out
+
+
+class MemoryAdd(BaseModel):
+    text: str
+
+
 # ---------- Personal memory (MemDream) ----------
 
 @router.get("/api/harness/memory")
 async def harness_memory(q: str = ""):
     from harness import memory
     return await memory.overview(q)
+
+
+@router.post("/api/harness/memory")
+async def harness_memory_add(body: MemoryAdd):
+    """Mamlesh typed a fact on the Memory page: the click is the approval."""
+    from harness import memory
+    if not body.text.strip():
+        raise HTTPException(400, "Write the fact first.")
+    try:
+        return await memory.remember(body.text.strip()[:1000])
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
 
 
 @router.get("/api/harness/memory/{memory_id}/history")

@@ -162,6 +162,8 @@ async def _run(run_id: str, query: str, source: str, chat_id: str):
                               prompts=prompt_registry.active_versions())
     # rolling summary + last turns (services/conversation.py), and personal memories that fit (harness/memory.py)
     history, memories = await asyncio.gather(conversation.history(chat_id), memory.recall(query))
+    if memories:  # the chat shows which memories this answer used
+        await emit(run_id, "memory.recall", memories=[m["content"] for m in memories])
     error = None
     try:
         out = await system["graph"].ainvoke(
@@ -184,9 +186,14 @@ async def _run(run_id: str, query: str, source: str, chat_id: str):
              totals["input_tokens"], totals["output_tokens"], totals["cost"])
 
     if database.db is not None:
+        ev = database.db.events
+        guard = {"injections": await ev.count_documents({"run_id": run_id, "type": "guard.injection"}),
+                 "redacted": sum(e.get("count", 0) for e in await ev.find(
+                     {"run_id": run_id, "type": "guard.redacted"}, {"count": 1}).to_list(100))}
         await database.db.runs.insert_one({
             "_id": run_id, "chat_id": chat_id, "query": query, "source": source, "status": status, "answer": answer,
             "usage": usage, "totals": totals, "started_at": started, "ended_at": ended,
+            "memories_used": [m["content"] for m in memories], "guard": guard,
         })
         await database.db.chats.update_one(
             {"_id": chat_id},

@@ -29,21 +29,26 @@ async def _guardrails(since: datetime) -> dict:
     """Approvals asked/approved/rejected, injection warnings and secrets removed in the period."""
     db = database.db
     asks = await db.approvals.find({"created_at": {"$gte": since}},
-                                   {"tool": 1, "server": 1, "status": 1, "wait_ms": 1, "created_at": 1}).to_list(5000)
+                                   {"tool": 1, "server": 1, "agent": 1, "query": 1, "note": 1, "args": 1, "run_id": 1,
+                                    "status": 1, "wait_ms": 1, "created_at": 1}).to_list(5000)
     by_status = defaultdict(int)
     for a in asks:
         by_status[a["status"]] += 1
     iso = since.isoformat()
     injections = await db.events.find({"type": "guard.injection", "ts": {"$gte": iso}},
                                       {"_id": 0, "tool": 1, "found": 1, "ts": 1, "run_id": 1}).sort("ts", -1).to_list(50)
-    redacted = await db.events.find({"type": "guard.redacted", "ts": {"$gte": iso}}, {"count": 1}).to_list(5000)
+    redacted = await db.events.find({"type": "guard.redacted", "ts": {"$gte": iso}},
+                                    {"_id": 0, "count": 1, "tool": 1, "ts": 1, "run_id": 1}).sort("ts", -1).to_list(5000)
     return {
         "approvals": len(asks), "approved": by_status["approved"], "rejected": by_status["rejected"],
         "expired": by_status["expired"], "pending": by_status["pending"],
         "avg_wait_ms": _avg([a["wait_ms"] for a in asks if a.get("wait_ms") is not None]),
-        "recent_approvals": [{"tool": a["tool"], "server": a.get("server"), "status": a["status"],
-                              "at": a["created_at"].isoformat()} for a in sorted(asks, key=lambda a: a["created_at"], reverse=True)[:8]],
-        "injections": len(injections), "recent_injections": injections[:5],
+        "recent_approvals": [{"tool": a["tool"], "server": a.get("server"), "agent": a.get("agent"),
+                              "query": a.get("query", ""), "note": a.get("note", ""), "args": a.get("args", {}),
+                              "run_id": a.get("run_id"), "status": a["status"], "wait_ms": a.get("wait_ms"),
+                              "at": a["created_at"].isoformat()} for a in sorted(asks, key=lambda a: a["created_at"], reverse=True)[:30]],
+        "injections": len(injections), "recent_injections": injections[:10],
+        "recent_redactions": redacted[:10],
         "secrets_removed": sum(r.get("count", 0) for r in redacted),
     }
 

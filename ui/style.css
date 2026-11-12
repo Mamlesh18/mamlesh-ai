@@ -378,7 +378,7 @@ ul.versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; 
 .approval input { padding: 7px 8px; border: 2px solid var(--ink); background: var(--paper); font: 500 13px var(--sans); }
 .approval .approve { background: var(--green); } .approval .reject { background: var(--paper); }
 .approval p { margin: 0; font-size: 13px; }
-#chat-fab.attention { background: var(--orange); color: var(--ink); animation: nudge 1.2s ease-in-out infinite; }
+#chat-fab.attention { background: var(--orange); color: var(--ink); animation: pulse-up 1.2s ease-in-out infinite; }
 
 /* ---------- Conversation: memory cards, chat delete ---------- */
 .memory:empty { display: none; }
@@ -396,3 +396,56 @@ ul.versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; 
 .mem-t th { text-align: left; }
 .mem-actions { white-space: nowrap !important; }
 .mem-chain { margin: 4px 0; padding-left: 20px; font-size: 12px; } .mem-chain li { margin: 2px 0; }
+
+/* ---------- Harness rail (main screen, top centre) ---------- */
+#harness-rail { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 15; display: flex; }
+body.drawer-open #harness-rail { left: calc((100% - var(--drawer-w)) / 2); }
+#harness-rail a { display: grid; gap: 1px; padding: 6px 14px; min-width: 130px; border: var(--line); background: var(--paper);
+  color: var(--ink); text-decoration: none; box-shadow: 4px 4px 0 var(--ink); }
+#harness-rail a + a { border-left: none; }
+#harness-rail .rail-k { font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+#harness-rail .rail-v { font: 500 12px var(--sans); white-space: nowrap; }
+#harness-rail .rail-k::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border: 2px solid var(--ink); background: var(--muted); vertical-align: 0; }
+#harness-rail a.ok .rail-k::before { background: var(--green); }
+#harness-rail a.attn { background: var(--orange); animation: pulse-up 1.2s ease-in-out infinite; }
+#harness-rail a.attn .rail-k::before { background: var(--paper); }
+#harness-rail a.busy .rail-k::before { background: var(--blue); animation: blink .6s steps(2) infinite; }
+#harness-rail a.bad .rail-k::before { background: var(--red); }
+#harness-rail a:hover { background: var(--ink); color: var(--yellow); }
+.legend .wait { background: var(--orange); border-style: dashed; } .legend .blk { background: var(--orange); }
+@media (max-width: 1100px) { #harness-rail a { min-width: 0; padding: 5px 9px; } #harness-rail .rail-v { display: none; } }
+@media (max-width: 900px) { body.drawer-open #harness-rail { display: none; } #harness-rail { top: 64px; } }
+
+/* ---------- Answer badges (chat) ---------- */
+.badge-btn { text-transform: none !important; font: 600 11px var(--sans) !important; }
+.badge-btn.mem { background: #e6f0ff; } .badge-btn.safe { background: #dcf7e9; } .badge-btn.warn { background: #ffe1de; }
+.badge-btn.on { background: var(--ink) !important; color: var(--yellow) !important; }
+.detail.mem-used, .detail.guard-used { font-size: 12px; padding: 8px 10px; border: 2px solid var(--ink); background: var(--bg); }
+.detail.mem-used ul, .detail.guard-used ul { margin: 6px 0; padding-left: 18px; } .detail a { font: 700 11px var(--mono); color: var(--ink); }
+.call.blocked { border-left-color: var(--orange); }
+
+/* ---------- Guardrails page ---------- */
+.pill { display: inline-block; padding: 1px 8px; border: 2px solid var(--ink); font: 700 10px var(--mono); text-transform: uppercase; background: var(--paper); }
+.pill.ok { background: #dcf7e9; } .pill.bad { background: #ffe1de; } .pill.attn { background: var(--orange); } .pill.muted { background: var(--bg); color: var(--muted); }
+.guard-strip { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; text-decoration: none; color: var(--ink); font-size: 13px; }
+.guard-strip > b { font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.guard-strip .go { margin-left: auto; font: 700 12px var(--mono); }
+.guard-strip:hover { background: #fff7cc; }
+.guard-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.guard-tile { display: flex; gap: 12px; padding: 14px; background: var(--paper); border: var(--line); box-shadow: var(--shadow); }
+.gt-icon { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border: 2px solid var(--ink); background: var(--yellow); font: 700 18px var(--mono); }
+.guard-tile b { display: block; font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+.guard-tile em { display: block; font: 700 14px var(--sans); font-style: normal; margin: 2px 0 4px; }
+.guard-tile p { margin: 0; font-size: 12px; color: var(--muted); }
+.attn-card { border-color: var(--ink); background: #fff1e0; margin-bottom: 16px; }
+.attn-card .approval + .approval { margin-top: 10px; }
+.guard-t td, .guard-t th { text-align: left !important; white-space: normal; vertical-align: top; }
+.guard-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; }
+.guard-list small { display: block; color: var(--muted); font: 500 11px var(--mono); margin-top: 2px; }
+.mem-add { margin-bottom: 4px; } .mem-add .primary { background: var(--blue); color: #fff; }
+#mem-msg:empty { display: none; }
+@keyframes pulse-up { 50% { transform: translateY(-3px); } }
+.live-card { align-self: start; }
+.h-col { display: grid; gap: 16px; align-content: start; }
+.eval-mini { display: flex; align-items: center; gap: 14px; } .eval-mini b { font: 700 34px var(--mono); }
+.h4-link { float: right; font: 700 11px var(--mono); color: var(--ink); text-transform: uppercase; }

@@ -19,11 +19,21 @@
       <button type="button" id="collapse">Hide tools</button>
     </div>
     <div class="legend">
-      <span class="q">queued</span><span class="run">running</span><span class="ok">done</span><span class="err">error</span>
+      <span class="q">queued</span><span class="run">running</span><span class="wait">needs approval</span><span class="ok">done</span><span class="blk">blocked</span><span class="err">error</span>
       <span class="hint">click the centre node to chat</span>
     </div>
     <div id="graph"></div>
   </section>
+
+  <!-- Harness rail: guardrails, evals and memory at a glance (each opens its page) -->
+  <nav id="harness-rail" aria-label="Harness">
+    <a id="rail-guard" href="/observability#guardrails" title="Approvals for every write, secret removal, injection warnings">
+      <span class="rail-k">Guardrails</span><span class="rail-v">…</span></a>
+    <a id="rail-evals" href="/observability#evals" title="The test set: run it, watch it, compare runs">
+      <span class="rail-k">Evals</span><span class="rail-v">…</span></a>
+    <a id="rail-memory" href="/observability#memory" title="Personal memory (MemDream)">
+      <span class="rail-k">Memory</span><span class="rail-v">…</span></a>
+  </nav>
 
   <!-- Top right: connection status + profile menu -->
   <div id="topright">
