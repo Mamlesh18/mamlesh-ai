@@ -15,3 +15,4 @@ pypdf==5.4.0
 cryptography==44.0.2
 python-multipart==0.0.20
 pyyaml==6.0.3
+memdream @ git+https://github.com/Mamlesh18/MemDream.git@v0.1.0  # personal memory layer (harness/memory.py)

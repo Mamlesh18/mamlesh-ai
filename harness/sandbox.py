@@ -13,7 +13,8 @@ SANDBOX = contextvars.ContextVar("sandbox", default=False)
 WRITE_PATTERN = re.compile(
     r"^(add|create|delete|remove|write|edit|move|fork|merge|push|update|set|resend|capture|initiate|submit|revoke|"
     r"notify|request|send|cancel|close|upload|append)_|_write$|^payment_link_(notify|upi_create)$")
-CUSTOM_WRITE_TOOLS = {"log_weight", "log_health", "set_health_goal", "delete_health_entry", "kb_add", "draft_email"}
+CUSTOM_WRITE_TOOLS = {"log_weight", "log_health", "set_health_goal", "delete_health_entry", "kb_add", "draft_email",
+                      "remember_personal"}
 
 
 def is_write_tool(name: str) -> bool:

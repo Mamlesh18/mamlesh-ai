@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from agents.domain_agents import DOMAINS, build_domain_agents
 from agents.orchestrator import build_orchestrator
-from harness import approvals, prompt_registry, tracing
+from harness import approvals, memory, prompt_registry, tracing
 from mcp_servers import client as mcp_client
 from mcp_servers import oauth
 from mcp_servers.client import load_mcp_tools
@@ -30,7 +30,8 @@ async def startup():
     events.main_loop = asyncio.get_running_loop()
     await tracing.setup()  # TTL indexes: traces and events delete themselves after TRACE_RETENTION_DAYS
     await prompt_registry.setup()
-    await approvals.setup()  # approval requests left pending by a restart are marked expired  # prompt versions: new prompts/*.md text becomes the active version
+    await approvals.setup()  # approval requests left pending by a restart are marked expired
+    await memory.setup()  # personal memory (MemDream): rebuilds its vector index from MongoDB  # prompt versions: new prompts/*.md text becomes the active version
     await kb_store.pull_missing()  # e.g. on Render, where kb/ is not in git
     await asyncio.to_thread(brain_tools.sync)  # build/load the FAISS index from kb/ and memory/
     mcp_client.on_auth_expired = auth_expired
@@ -159,11 +160,12 @@ async def _run(run_id: str, query: str, source: str, chat_id: str):
     trace = []  # spans of this query (harness/tracing.py), saved in one write at the end
     root = tracing.start_span(trace, "run", "query", None, span_id=run_id, query=query[:300], chat_id=chat_id, source=source,
                               prompts=prompt_registry.active_versions())
-    history = await conversation.history(chat_id)  # rolling summary + last turns (services/conversation.py)
+    # rolling summary + last turns (services/conversation.py), and personal memories that fit (harness/memory.py)
+    history, memories = await asyncio.gather(conversation.history(chat_id), memory.recall(query))
     error = None
     try:
         out = await system["graph"].ainvoke(
-            {"query": query, "history": history},
+            {"query": query, "history": history, "memories": memories},
             config={"configurable": {"run_id": run_id, "usage": usage, "trace": trace, "root_span": root["_id"]}})
         answer, status = out.get("answer", ""), "done"
     except Exception as e:

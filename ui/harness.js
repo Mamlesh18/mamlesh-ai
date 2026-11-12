@@ -39,7 +39,7 @@ function go() {
   document.querySelector(".h-range").hidden = route[0] !== "overview";
   hideTip();
   const v = ++view;
-  const page = { overview: overview, trace: trace, evals: evals, eval: evalRun, compare: compare, prompts: prompts, prompt: promptPage }[route[0]] || overview;
+  const page = { overview: overview, trace: trace, evals: evals, eval: evalRun, compare: compare, prompts: prompts, prompt: promptPage, memory: memoryPage }[route[0]] || overview;
   body.innerHTML = `<p class="muted">Loading…</p>`;
   page(v, ...route.slice(1)).catch((e) => { if (!(e instanceof LoggedOut) && v === view) body.innerHTML = `<p class="down">${esc(e.message)}</p>`; });
 }
@@ -657,6 +657,67 @@ async function promptPage(v, name) {
     // An agent's prompt is tested on its own cases; the planner and synthesizer affect every case.
     const tag = ["planner", "synthesizer"].includes(name) ? "" : name;
     location.hash = tag ? `evals/${tag}` : "evals";
+  }));
+}
+
+// ---------------------------------------------------------------- personal memory (MemDream)
+
+let memQuery = "";
+const ACTION_LABEL = { ADD: "added", SUPERSEDE: "replaced an old fact", MERGE: "merged", NOOP: "already known",
+  MANUAL_ADD: "added by hand", FORGET: "forgotten", EXPIRE: "expired", SYNTHESIS: "pattern found" };
+
+async function memoryPage(v) {
+  const d = await api(`/api/harness/memory?q=${encodeURIComponent(memQuery)}`);
+  if (stale(v)) return;
+  if (!d.enabled) {
+    body.innerHTML = `<section class="h-card"><h4>Personal memory</h4><p class="down">MemDream is not running: ${esc(d.error || "starting")}</p></section>`;
+    return;
+  }
+  const c = d.stats.counts || {};
+  const t = d.stats.tokens?.totals || {};
+  sub(`${c.active || 0} memories`);
+  const row = (m) => `<tr data-mem="${esc(m.id)}">
+      <td>${esc(m.content)}${m.superseded_by ? `<small>replaced by a newer fact</small>` : ""}</td>
+      <td>${esc(m.type)}</td><td class="${m.status === "active" ? "" : "muted"}">${esc(m.status)}</td>
+      <td>${m.created_at ? ago(m.created_at) : "–"}</td>
+      <td class="mem-actions"><button type="button" class="mini" data-hist="${esc(m.id)}">History</button>
+        ${m.status === "active" ? `<button type="button" class="mini" data-forget="${esc(m.id)}">Forget</button>` : ""}</td></tr>
+    <tr class="case-detail" data-histfor="${esc(m.id)}" hidden><td colspan="5"></td></tr>`;
+  body.innerHTML = `
+    <div class="h-kpis">
+      ${tile(c.active || 0, "memories in use")}
+      ${tile(c.superseded || 0, "replaced", "kept for history")}
+      ${tile(c.merged || 0, "merged")}
+      ${tile(c.expired || 0, "forgotten")}
+      ${tile(usd(t.estimatedCost || 0), "memory LLM cost", `${tok(t.totalTokens || 0)} tokens`)}
+    </div>
+    <section class="h-card">
+      <h4>Personal memory <span class="muted">MemDream · only personal details: ${d.types.map(esc).join(", ")}</span></h4>
+      <form id="mem-search" class="ev-form"><input id="mem-q" placeholder="Search memories, e.g. sister's email" value="${esc(memQuery)}" autocomplete="off">
+        <button type="submit">Search</button>${memQuery ? `<button type="button" id="mem-clear">Show all</button>` : ""}</form>
+      ${d.memories.length ? `<table class="usage mem-t"><tr><th>memory</th><th>type</th><th>status</th><th>saved</th><th></th></tr>${d.memories.map(row).join("")}</table>`
+        : `<p class="muted">${memQuery ? "Nothing matches." : "No memories yet. Save one from a “Remember this?” card in the chat, or tell the assistant “remember that …”."}</p>`}
+      <p class="muted small">Before every question, the memories that fit it are given to the planner (see “memories” on a trace's planner step).
+        Saving always needs your click; Forget is reversible (the memory stays in History).</p>
+    </section>
+    <section class="h-card"><h4>Recent decisions <span class="muted">what MemDream did with each fact, and why</span></h4>
+      ${d.audit.length ? `<table class="usage mem-t"><tr><th>when</th><th>decision</th><th>fact</th><th>why</th></tr>
+        ${d.audit.map((a) => `<tr><td>${ago(a.timestamp)}</td><td>${esc(ACTION_LABEL[a.action] || a.action)}</td><td>${esc(a.inputContent || "")}</td><td>${esc(a.reason || "")}</td></tr>`).join("")}</table>`
+        : `<p class="muted">No decisions yet.</p>`}
+    </section>`;
+  $("mem-search").onsubmit = (e) => { e.preventDefault(); memQuery = $("mem-q").value.trim(); go(); };
+  if ($("mem-clear")) $("mem-clear").onclick = () => { memQuery = ""; go(); };
+  body.querySelectorAll("[data-hist]").forEach((b) => (b.onclick = async () => {
+    const cell = body.querySelector(`tr[data-histfor="${CSS.escape(b.dataset.hist)}"]`);
+    if (!cell.hidden) { cell.hidden = true; return; }
+    const chain = await api(`/api/harness/memory/${encodeURIComponent(b.dataset.hist)}/history`);
+    cell.firstElementChild.innerHTML = `<ol class="mem-chain">${chain.map((m) => `<li><b>${esc(m.status)}</b> ${esc(m.content)} <small class="muted">${m.created_at ? new Date(m.created_at).toLocaleString() : ""}</small></li>`).join("")}</ol>`;
+    cell.hidden = false;
+  }));
+  body.querySelectorAll("[data-forget]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Forget this memory? The assistant stops using it. It stays in the history, so this can be undone later.")) return;
+    await post(`/api/harness/memory/${encodeURIComponent(b.dataset.forget)}/forget`, {});
+    go();
   }));
 }
 

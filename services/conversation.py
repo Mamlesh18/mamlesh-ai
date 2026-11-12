@@ -6,7 +6,7 @@
 - Titles: after the first answer, a 3-6 word title replaces the first 60 characters of the question.
 - Memory: when a message looks like it states a lasting fact about Mamlesh ("my sister's email is...",
   "I moved to Pune"), the facts are offered as "Remember this?" cards. Nothing is saved until Mamlesh clicks
-  Save (that click is the approval), and it goes to the Brain knowledge base.
+  Save (that click is the approval), and it goes to personal memory (MemDream, harness/memory.py).
 
 All three run after the answer is shown, with small gpt-4.1-mini calls. Their cost is kept per chat
 ("background_cost") and shown on the Observability page.
@@ -140,9 +140,9 @@ async def after_run(chat_id: str, run_id: str, query: str, planned: list[str]):
 
 # ---------------------------------------------------------------- memory cards
 
-async def decide_memory(run_id: str, suggestion_id: str, save: bool, text: str | None = None) -> str:
+async def decide_memory(run_id: str, suggestion_id: str, save: bool, text: str | None = None) -> dict:
     """Mamlesh clicked Save or Dismiss on a "Remember this?" card. Save writes it to the Brain."""
-    from tools.brain_tools import kb_add
+    from harness import memory
 
     db = database.db
     run = await db.runs.find_one({"_id": run_id}, {"memory": 1}) or {}
@@ -152,13 +152,14 @@ async def decide_memory(run_id: str, suggestion_id: str, save: bool, text: str |
     status = "dismissed"
     if save:
         fact = (text or item["text"]).strip()
-        # The click is the approval, so call the tool's own function (not the approval wrapper).
-        save_fn = getattr(kb_add.coroutine, "__wrapped__", kb_add.coroutine)
-        await save_fn(text=fact)
+        # The click is the approval. MemDream decides whether it is new, replaces an old fact, or is known.
+        result = await memory.remember(fact)
         item["text"], status = fact, "saved"
+        item["action"] = result["action"]
     await db.runs.update_one({"_id": run_id, "memory.id": suggestion_id},
-                             {"$set": {"memory.$.status": status, "memory.$.text": item["text"]}})
-    return status
+                             {"$set": {"memory.$.status": status, "memory.$.text": item["text"],
+                                       "memory.$.action": item.get("action")}})
+    return {"status": status, "action": item.get("action")}
 
 
 # ---------------------------------------------------------------- chat management

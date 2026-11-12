@@ -103,7 +103,7 @@ async def decide_memory(run_id: str, suggestion_id: str, body: MemoryDecision):
     """Save (to the Brain) or dismiss a "Remember this?" card."""
     from services import conversation
     try:
-        return {"status": await conversation.decide_memory(run_id, suggestion_id, body.save, body.text)}
+        return await conversation.decide_memory(run_id, suggestion_id, body.save, body.text)
     except ValueError as e:
         raise HTTPException(409, str(e))
 
@@ -189,6 +189,27 @@ async def harness_get_eval(eval_id: str):
     if not run:
         raise HTTPException(404, "Eval run not found")
     return run
+
+
+# ---------- Personal memory (MemDream) ----------
+
+@router.get("/api/harness/memory")
+async def harness_memory(q: str = ""):
+    from harness import memory
+    return await memory.overview(q)
+
+
+@router.get("/api/harness/memory/{memory_id}/history")
+async def harness_memory_history(memory_id: str):
+    from harness import memory
+    return await memory.history(memory_id)
+
+
+@router.post("/api/harness/memory/{memory_id}/forget")
+async def harness_memory_forget(memory_id: str):
+    """Stop using a memory (reversible: it stays in the history)."""
+    from harness import memory
+    return await memory.forget(memory_id)
 
 
 # ---------- Prompt versions ----------

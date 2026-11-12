@@ -402,8 +402,8 @@ function renderMemory(rid) {
   box.innerHTML = list.map((m) => m.status === "pending"
     ? `<div class="memcard" data-id="${esc(m.id)}"><b>💾 Remember this?</b>
         <input value="${esc(m.text)}" aria-label="Fact to remember" autocomplete="off">
-        <div class="draft-actions"><button type="button" class="save">Save to Brain</button><button type="button" class="dismiss">Dismiss</button></div></div>`
-    : `<div class="memcard done"><b>${m.status === "saved" ? "✓ Saved to Brain" : "Dismissed"}</b> <span class="muted">${esc(m.text)}</span></div>`).join("");
+        <div class="draft-actions"><button type="button" class="save">Save to memory</button><button type="button" class="dismiss">Dismiss</button></div></div>`
+    : `<div class="memcard done"><b>${m.status === "saved" ? `✓ ${{ SUPERSEDE: "Saved - replaced an older fact", MERGE: "Merged into an existing memory", NOOP: "Already remembered" }[m.action] || "Saved to memory"}` : "Dismissed"}</b> <span class="muted">${esc(m.text)}</span></div>`).join("");
   box.querySelectorAll(".memcard[data-id]").forEach((card) => {
     const go = async (save) => {
       card.querySelectorAll("button").forEach((b) => (b.disabled = true));
@@ -412,7 +412,8 @@ function renderMemory(rid) {
         body: JSON.stringify({ save, text }) });
       if (r.status === 401) return toLogin();
       const m = list.find((x) => x.id === card.dataset.id);
-      Object.assign(m, r.ok ? { status: (await r.json()).status, text } : { status: "dismissed" });
+      if (r.ok) { const d = await r.json(); Object.assign(m, { status: d.status, action: d.action, text }); }
+      else Object.assign(m, { status: "dismissed" });
       renderMemory(rid);
     };
     card.querySelector(".save").onclick = () => go(true);

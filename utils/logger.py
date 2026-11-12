@@ -10,3 +10,7 @@ logging.basicConfig(
 
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
+
+# One line per HTTP request (OpenAI, MCP, embeddings) is noise; warnings and errors still show.
+for _noisy in ("httpx", "httpx2"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Node.js is needed for the filesystem MCP server
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+# Node.js is needed for the filesystem MCP server; git for MemDream (installed from GitHub)
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm git \
     && npm install -g @modelcontextprotocol/server-filesystem \
     && rm -rf /var/lib/apt/lists/*
 

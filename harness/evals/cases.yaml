@@ -205,7 +205,7 @@
   query: Remember that I prefer meetings in the morning.
   expect:
     domains: [brain]
-    tools_all: [kb_add]
+    tools_any: [remember_personal, kb_add]  # a preference is a personal detail: personal memory (MemDream)
     judge: Confirms the preference was saved.
 
 # ---------------- Personal ----------------
@@ -344,3 +344,30 @@
     domains: [finance]
     tools_all: [stock_quote]
     judge: Gives the current Infosys share price on NSE.
+
+# ---------------- Personal memory (MemDream) ----------------
+# Evals read a separate memory partition with made-up fixtures (harness/memory.py EVAL_FIXTURES).
+- id: memory-email-sister
+  tags: [memory, conversation]
+  query: Email my sister that I'll call her tonight.
+  expect:
+    domains: [conversation]
+    tools_all: [draft_email]
+    judge: Drafts an email to the sister's address from memory (priya.test@example.com) saying Mamlesh will call tonight. Does not ask for the address and does not claim it was sent.
+
+- id: memory-city
+  tags: [memory, routing]
+  query: Which city do I live in?
+  expect:
+    contains_all: [Pune]
+    tools_none: [tavily_search, draft_email]
+    judge: Answers Pune, from memory, without inventing other details.
+
+- id: memory-remember
+  tags: [memory, brain, write]
+  query: Remember that my sister Priya's birthday is on 4 March.
+  expect:
+    domains: [brain]
+    tools_any: [remember_personal]
+    tools_none: [kb_add]
+    judge: Confirms the birthday was saved to memory.

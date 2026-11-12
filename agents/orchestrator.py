@@ -22,6 +22,7 @@ from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from agents.domain_agents import DOMAINS
+from harness import memory
 from harness.approvals import CURRENT as RUN_CONTEXT
 from harness.sandbox import SANDBOX
 from harness.tracing import end_span, start_span
@@ -58,6 +59,7 @@ def mark_first_word(config: RunnableConfig):
 class State(TypedDict, total=False):
     query: str
     history: str  # earlier turns of this chat ("" for a new chat)
+    memories: list[dict]  # personal memories that fit the question (harness/memory.py), recalled before planning
     steps: list[dict]
     results: Annotated[list[dict], operator.add]  # parallel agents append here
     answer: str
@@ -174,6 +176,11 @@ def build_orchestrator(agents: dict, tool_owner: dict):
         request = state["query"]
         if state.get("history"):
             request = f"Conversation so far:\n{state['history']}\n\nNew request: {request}"
+        memories = state.get("memories")
+        if memories is None:  # evals and other callers that did not recall beforehand
+            memories = await memory.recall(state["query"])
+        if memories:
+            request = f"Known about Mamlesh (personal memory):\n{memory.as_context(memories)}\n\n{request}"
         try:
             plan = await llm.with_structured_output(Plan).ainvoke(
                 [("system", planner_prompt), ("user", request)], config=events(config, "orchestrator", s["_id"])
@@ -183,14 +190,15 @@ def build_orchestrator(agents: dict, tool_owner: dict):
             raise
         steps = [st.model_dump() for st in plan.steps if st.domain in agents]
         reply = plan.reply.strip() if not steps else ""
-        end_span(s, steps=[st["domain"] for st in steps], history_chars=len(state.get("history", "")), replied=bool(reply))
+        end_span(s, steps=[st["domain"] for st in steps], history_chars=len(state.get("history", "")), replied=bool(reply),
+                 memories=[m["content"][:120] for m in memories])
         await emit(run_id, "plan", steps=steps)
         if reply:  # nothing for the agents to do: the planner answered (saves the synthesizer call)
             mark_first_word(config)
             await emit(run_id, "token", text=reply)
             await emit(run_id, "node.end", node="orchestrator")
-            return {"steps": [], "answer": reply}
-        return {"steps": steps}
+            return {"steps": [], "answer": reply, "memories": memories}
+        return {"steps": steps, "memories": memories}
 
     def dispatch(state: State):
         if state.get("answer"):
@@ -198,7 +206,8 @@ def build_orchestrator(agents: dict, tool_owner: dict):
         if not state.get("steps"):
             return "synthesize"
         direct = len(state["steps"]) == 1  # one agent: its answer is the final answer
-        return [Send("domain", {"query": state["query"], "history": state.get("history", ""), **step, "direct": direct})
+        known = memory.as_context(state.get("memories") or [])
+        return [Send("domain", {"query": state["query"], "history": state.get("history", ""), "known": known, **step, "direct": direct})
                 for step in state["steps"]]
 
     async def domain(step: dict, config: RunnableConfig):
@@ -207,7 +216,7 @@ def build_orchestrator(agents: dict, tool_owner: dict):
         s = span(config, "agent", f"{name} agent", agent=name, task=task[:300], direct=direct)
         await emit(run_id, "domain.start", domain=name, task=task)
         # Tools read this: which chat to ask for approval in, and what Mamlesh actually said (for prechecks)
-        RUN_CONTEXT.set({"run_id": run_id, "agent": name, "user_text": step.get("history", "") + " " + step.get("query", ""),
+        RUN_CONTEXT.set({"run_id": run_id, "agent": name, "user_text": " ".join((step.get("known", ""), step.get("history", ""), step.get("query", ""))),
                          "query": step.get("query", "")})
         try:
             now = datetime.now().strftime("%A, %Y-%m-%d %H:%M")

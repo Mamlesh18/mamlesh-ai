@@ -21,7 +21,7 @@ DOMAINS = {
     "general": "Live web search and reading web pages (Tavily), current date/time, and maths.",
     "healthcare": "Mamlesh's personal health log and goals: weight and weight goal, steps, sleep, workouts, meals, water, blood pressure, symptoms, medication. Save new data and report progress.",
     "finance": "Mamlesh's investments: the consolidated portfolio statement (all demat accounts and mutual funds, invested vs current value, monthly value history), the Upstox account (live positions, orders, funds), live stock prices (NSE, BSE, US), and Indian mutual fund NAVs and returns.",
-    "brain": "Mamlesh's long-term memory and knowledge base: facts about Mamlesh, saved notes and documents. Search them or save new ones.",
+    "brain": "Mamlesh's long-term memory: personal details (people and their contacts, where Mamlesh lives and works, preferences, goals, important dates) and the knowledge base of notes and documents. Search them or save new ones.",
 }
 
 

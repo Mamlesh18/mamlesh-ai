@@ -390,3 +390,9 @@ ul.versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; 
 .chat-row button[data-id] { margin-bottom: 0 !important; }
 #chat-list .chat-del { width: auto; padding: 8px 10px; }
 #chat-list .chat-del:hover { background: var(--red); color: #fff; }
+
+/* ---------- Personal memory tab ---------- */
+.mem-t td { text-align: left !important; white-space: normal; vertical-align: top; }
+.mem-t th { text-align: left; }
+.mem-actions { white-space: nowrap !important; }
+.mem-chain { margin: 4px 0; padding-left: 20px; font-size: 12px; } .mem-chain li { margin: 2px 0; }
