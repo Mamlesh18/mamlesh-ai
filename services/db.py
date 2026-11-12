@@ -15,7 +15,7 @@ async def connect():
         log.warning("MONGODB_URL not set. History will not be saved.")
         return
     try:
-        client = AsyncMongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+        client = AsyncMongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000, tz_aware=True)  # dates come back as UTC, so the UI shows local time correctly
         await client.admin.command("ping")
         db = client[MONGODB_DB]
         await db.events.create_index([("run_id", 1), ("ts", 1)])

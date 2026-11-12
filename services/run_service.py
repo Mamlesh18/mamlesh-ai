@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from agents.domain_agents import DOMAINS, build_domain_agents
 from agents.orchestrator import build_orchestrator
-from harness import tracing
+from harness import prompt_registry, tracing
 from mcp_servers import client as mcp_client
 from mcp_servers import oauth
 from mcp_servers.client import load_mcp_tools
@@ -28,6 +28,7 @@ async def startup():
 
     events.main_loop = asyncio.get_running_loop()
     await tracing.setup()  # TTL indexes: traces and events delete themselves after TRACE_RETENTION_DAYS
+    await prompt_registry.setup()  # prompt versions: new prompts/*.md text becomes the active version
     await kb_store.pull_missing()  # e.g. on Render, where kb/ is not in git
     await asyncio.to_thread(brain_tools.sync)  # build/load the FAISS index from kb/ and memory/
     mcp_client.on_auth_expired = auth_expired
@@ -42,6 +43,19 @@ def _build_agents():
     agents, system["tool_owner"], system["context"] = build_domain_agents(system["mcp"])
     system["graph"], system["orchestrator_context"] = build_orchestrator(agents, system["tool_owner"])
     log.info("Orchestrator ready with %d domain agents", len(agents))
+
+
+def rebuild():
+    """Rebuild the agents, e.g. after a prompt version was activated."""
+    _build_agents()
+
+
+def build_test_graph(prompt_texts: dict[str, str]):
+    """A separate copy of the Orchestrator using other prompt texts (for evals). The live agents are untouched."""
+    with prompt_registry.try_versions(prompt_texts):
+        agents, owner, _ = build_domain_agents(system["mcp"])
+        graph, _ = build_orchestrator(agents, owner)
+    return graph
 
 
 async def reconnect(domain: str, name: str):
@@ -148,7 +162,8 @@ async def _run(run_id: str, query: str, source: str, chat_id: str):
     await emit(run_id, "run.start", query=query, source=source, chat_id=chat_id)
     usage = {}  # filled in by every LLM call: {agent: {calls, input_tokens, cached_tokens, output_tokens, cost}}
     trace = []  # spans of this query (harness/tracing.py), saved in one write at the end
-    root = tracing.start_span(trace, "run", "query", None, span_id=run_id, query=query[:300], chat_id=chat_id, source=source)
+    root = tracing.start_span(trace, "run", "query", None, span_id=run_id, query=query[:300], chat_id=chat_id, source=source,
+                              prompts=prompt_registry.active_versions())
     history = await _chat_history(chat_id)
     error = None
     try:

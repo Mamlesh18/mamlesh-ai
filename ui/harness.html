@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Observability · Mamlesh AI OS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="page">
+  <header class="p-head">
+    <a class="brand-tag p-brand" href="/" title="Back to the agent map">Mamlesh//OS</a>
+    <nav class="h-tabs" aria-label="Sections">
+      <a href="#overview" data-sec="overview">Overview</a>
+      <a href="#evals" data-sec="evals">Evals</a>
+      <a href="#prompts" data-sec="prompts">Prompts</a>
+    </nav>
+    <span id="h-sub" class="muted"></span>
+    <div class="h-actions">
+      <div class="h-range" role="group" aria-label="Time range" hidden>
+        <button type="button" data-days="1">24 h</button>
+        <button type="button" data-days="7" class="on">7 days</button>
+      </div>
+      <span id="status"><span id="status-dot" class="dot"></span><span id="status-text">connecting…</span></span>
+      <a class="btn-link" href="/">← Agent map</a>
+    </div>
+  </header>
+
+  <main id="harness-body"></main>
+  <div id="tip" role="tooltip" hidden></div>
+
+  <script src="harness.js"></script>
+</body>
+</html>

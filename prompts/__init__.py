@@ -1,8 +1,7 @@
-"""Prompts live as .md files in this folder. load_prompt("coding") reads prompts/coding.md."""
-from pathlib import Path
-
-PROMPTS_DIR = Path(__file__).parent
+"""Prompts start as .md files in this folder. Versions edited in the UI are kept in MongoDB
+(harness/prompt_registry.py); load_prompt("coding") returns the active version, or prompts/coding.md."""
 
 
 def load_prompt(name: str) -> str:
-    return (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8").strip()
+    from harness import prompt_registry
+    return prompt_registry.get(name)

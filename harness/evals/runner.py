@@ -17,12 +17,12 @@ import yaml
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from harness import sandbox, tracing
+from harness import prompt_registry, sandbox, tracing
 from harness.metrics import pct
 from services import db as database
 from services.events import emit
 from utils.cost import llm_cost
-from utils.env import OPENAI_MODEL, ROOT_DIR
+from utils.env import OPENAI_MODEL
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -42,11 +42,11 @@ def load_cases(tags: list[str] | None = None, ids: list[str] | None = None) -> l
     return cases
 
 
-def prompts_fingerprint() -> str:
-    """Changes whenever any prompt file changes, so runs can be compared per prompt version."""
+def prompts_fingerprint(texts: dict[str, str] | None = None) -> str:
+    """Hash of the prompt texts a run uses (live versions, plus any being tried), to tell prompt sets apart."""
     h = hashlib.sha256()
-    for f in sorted((ROOT_DIR / "prompts").glob("*.md")):
-        h.update(f.name.encode() + f.read_bytes())
+    for name in prompt_registry.names():
+        h.update(name.encode() + (texts or {}).get(name, prompt_registry.get(name)).encode())
     return h.hexdigest()[:10]
 
 
@@ -121,9 +121,7 @@ def run_checks(expect: dict, planned: list[str], tools: list[str], answer: str) 
 
 # ---------- one case ----------
 
-async def run_case(case: dict) -> dict:
-    from services.run_service import system
-
+async def run_case(case: dict, graph) -> dict:
     sandbox.SANDBOX.set(True)  # this task only: write tools are faked
     run_id = f"eval-{uuid.uuid4().hex[:10]}"
     trace, usage = [], {}
@@ -131,7 +129,7 @@ async def run_case(case: dict) -> dict:
     answer, error = "", None
     try:
         out = await asyncio.wait_for(
-            system["graph"].ainvoke({"query": case["query"], "history": case.get("history", "")},
+            graph.ainvoke({"query": case["query"], "history": case.get("history", "")},
                                     config={"configurable": {"run_id": run_id, "usage": usage, "trace": trace, "root_span": run_id}}),
             timeout=CASE_TIMEOUT_S)
         answer = out.get("answer", "")
@@ -207,7 +205,9 @@ def summarize(results: list[dict]) -> dict:
     }
 
 
-async def start(label: str = "", tags: list[str] | None = None, ids: list[str] | None = None) -> str:
+async def start(label: str = "", tags: list[str] | None = None, ids: list[str] | None = None,
+                prompts: dict[str, int] | None = None) -> str:
+    """prompts: {name: version} to try instead of the active versions (the live agents are not changed)."""
     if database.db is None:
         raise RuntimeError("MongoDB is not connected.")
     if current["eval_id"]:
@@ -215,24 +215,30 @@ async def start(label: str = "", tags: list[str] | None = None, ids: list[str] |
     cases = load_cases(tags, ids)
     if not cases:
         raise ValueError("No cases match.")
+    prompts = {n: int(v) for n, v in (prompts or {}).items() if int(v) != prompt_registry.active_versions().get(n)}
+    from services import run_service
+    texts = await prompt_registry.texts_for(prompts)  # raises ValueError for an unknown version
+    graph = run_service.build_test_graph(texts) if texts else run_service.system["graph"]
     eval_id = uuid.uuid4().hex[:10]
     await database.db.eval_runs.insert_one({
         "_id": eval_id, "label": label or datetime.now().strftime("run %d %b %H:%M"), "status": "running",
         "started_at": datetime.now(timezone.utc), "total": len(cases), "done": 0, "filter": {"tags": tags, "ids": ids},
-        "prompts": prompts_fingerprint(), "model": OPENAI_MODEL})
+        "prompts": prompts_fingerprint(texts), "prompt_versions": {**prompt_registry.active_versions(), **prompts},
+        "trying": prompts, "case_ids": [c["id"] for c in cases], "model": OPENAI_MODEL})
     current["eval_id"] = eval_id
-    task = asyncio.create_task(_run(eval_id, cases))
+    task = asyncio.create_task(_run(eval_id, cases, graph))
     task.add_done_callback(lambda _: current.update(eval_id=None))
     return eval_id
 
 
-async def _run(eval_id: str, cases: list[dict]):
+async def _run(eval_id: str, cases: list[dict], graph):
     sem, results, db = asyncio.Semaphore(CONCURRENCY), [], database.db
 
     async def one(case):
         async with sem:
+            await emit("system", "eval.case", eval_id=eval_id, case_id=case["id"])  # started
             try:
-                r = await run_case(case)
+                r = await run_case(case, graph)
             except Exception as e:  # never let one case kill the run
                 r = {"case_id": case["id"], "tags": case.get("tags", []), "query": case["query"], "passed": False,
                      "checks": {"error": {"passed": False, "detail": str(e)}}, "planned": [], "tools": [], "answer": "",
@@ -242,7 +248,7 @@ async def _run(eval_id: str, cases: list[dict]):
             await db.eval_results.insert_one({**r, "eval_id": eval_id, "expire_at": tracing.expires_at()})
             await db.eval_runs.update_one({"_id": eval_id}, {"$inc": {"done": 1}})
             await emit("system", "eval.progress", eval_id=eval_id, done=len(results), total=len(cases),
-                       case_id=r["case_id"], passed=r["passed"])
+                       case_id=r["case_id"], passed=r["passed"], failed=[n for n, c in r["checks"].items() if not c["passed"]])
 
     try:
         await asyncio.gather(*(one(c) for c in cases))

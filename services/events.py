@@ -42,8 +42,8 @@ async def _send(event: dict):
         except Exception:
             clients.discard(ws)
 
-    # Tokens are only for the live view, so they are not saved.
-    if database.db is not None and type != "token":
+    # Tokens and eval progress are only for the live view, so they are not saved.
+    if database.db is not None and type != "token" and not type.startswith("eval."):  # eval progress is live-only
         try:
             from harness.tracing import expires_at  # events are trace data: deleted after the retention period
             await database.db.events.insert_one({**event, "expire_at": expires_at()})

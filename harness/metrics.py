@@ -120,4 +120,5 @@ async def summary(days: int = 7) -> dict:
         "tools": tool_rows,
         "slowest": [run_row(r) for r in sorted(runs, key=lambda r: -(r["duration_ms"] or 0))[:8]],
         "expensive": [run_row(r) for r in sorted(runs, key=lambda r: -r["attrs"].get("cost", 0))[:8]],
+        "recent": [run_row(r) for r in sorted(runs, key=lambda r: r["start"], reverse=True)[:15]],
     }

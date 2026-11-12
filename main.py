@@ -51,6 +51,12 @@ def login_page(request: Request):
     return FileResponse(UI_DIR / "login.html")
 
 
+@app.get("/observability")
+def observability_page():
+    """Observability, evals and prompt versions on their own page."""
+    return FileResponse(UI_DIR / "harness.html")
+
+
 @app.get("/healthz")
 def healthz():
     """Public uptime check for Render (shows nothing private)."""

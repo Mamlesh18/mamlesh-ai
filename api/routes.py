@@ -134,6 +134,7 @@ class EvalRequest(BaseModel):
     label: str = ""
     tags: list[str] | None = None  # only cases with one of these tags
     ids: list[str] | None = None   # only these cases
+    prompts: dict[str, int] | None = None  # {prompt name: version} to try instead of the active ones
 
 
 @router.get("/api/harness/evals/cases")
@@ -148,7 +149,7 @@ async def harness_start_eval(body: EvalRequest):
     """Start an eval run in the background (sandbox mode: nothing is written or sent)."""
     from harness.evals import runner
     try:
-        return {"eval_id": await runner.start(body.label, body.tags, body.ids)}
+        return {"eval_id": await runner.start(body.label, body.tags, body.ids, body.prompts)}
     except (ValueError, RuntimeError) as e:
         raise HTTPException(400, str(e))
 
@@ -166,6 +167,70 @@ async def harness_get_eval(eval_id: str):
     if not run:
         raise HTTPException(404, "Eval run not found")
     return run
+
+
+# ---------- Prompt versions ----------
+
+class PromptSaveRequest(BaseModel):
+    text: str
+    note: str = ""
+    activate: bool = False
+
+
+class PromptActivateRequest(BaseModel):
+    version: int
+
+
+class PromptImproveRequest(BaseModel):
+    instructions: str = ""
+
+
+@router.get("/api/harness/prompts")
+async def harness_list_prompts():
+    from harness import prompt_registry
+    return await prompt_registry.list_prompts()
+
+
+@router.get("/api/harness/prompts/{name}")
+async def harness_prompt_history(name: str):
+    from harness import prompt_registry
+    if name not in prompt_registry.names():
+        raise HTTPException(404, "Unknown prompt")
+    return await prompt_registry.history(name)
+
+
+@router.post("/api/harness/prompts/{name}")
+async def harness_save_prompt(name: str, body: PromptSaveRequest):
+    """Save a new version (and optionally make it the one the agents use)."""
+    from harness import prompt_registry
+    try:
+        version = await prompt_registry.save(name, body.text, body.note, body.activate)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if body.activate:
+        run_service.rebuild()
+    return {"version": version}
+
+
+@router.post("/api/harness/prompts/{name}/activate")
+async def harness_activate_prompt(name: str, body: PromptActivateRequest):
+    """Make a version live (also how you roll back)."""
+    from harness import prompt_registry
+    try:
+        await prompt_registry.set_active(name, body.version)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    run_service.rebuild()
+    return {"active": body.version}
+
+
+@router.post("/api/harness/prompts/{name}/improve")
+async def harness_improve_prompt(name: str, body: PromptImproveRequest):
+    """AI suggestion from the latest eval failures. Nothing is saved."""
+    from harness import prompt_improver, prompt_registry
+    if name not in prompt_registry.names():
+        raise HTTPException(404, "Unknown prompt")
+    return await prompt_improver.suggest(name, body.instructions)
 
 
 class SendDraftRequest(BaseModel):
