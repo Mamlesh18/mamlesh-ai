@@ -277,13 +277,13 @@ function renderMessages() {
     return;
   }
   box.innerHTML = messages.map((rid) => `<div class="msg user">${esc(runs[rid].query)}</div>
-      <div class="msg bot" id="m-${rid}"><div class="bot-main"></div><div class="approvals"></div><div class="drafts"></div></div>`).join("")
+      <div class="msg bot" id="m-${rid}"><div class="bot-main"></div><div class="approvals"></div><div class="drafts"></div><div class="memory"></div></div>`).join("")
     + (pendingQuery ? `<div class="msg user">${esc(pendingQuery)}</div><div class="msg bot"><div class="answer"><span class="thinking">sending…</span></div></div>` : "");
   if (orphanApprovals.some((a) => a.status === "pending")) {  // waiting requests from a question not shown here
     box.insertAdjacentHTML("afterbegin", `<div class="msg bot" id="m-orphans"><b>Waiting for your approval</b><div class="approvals"></div></div>`);
     renderApprovals("orphans");
   }
-  messages.forEach((rid) => { renderBot(rid); renderApprovals(rid); renderDrafts(rid); });
+  messages.forEach((rid) => { renderBot(rid); renderApprovals(rid); renderDrafts(rid); renderMemory(rid); });
   box.scrollTop = box.scrollHeight;
 }
 
@@ -391,6 +391,33 @@ async function loadPendingApprovals() {
   orphanApprovals = (await r.json()).filter((a) => !runs[a.run_id]);
   if (orphanApprovals.length) renderMessages();
   updateAttention();
+}
+
+// ---------- "Remember this?": facts from the chat, saved to the Brain only when Mamlesh clicks Save ----------
+
+function renderMemory(rid) {
+  const box = $(`m-${rid}`)?.querySelector(".memory");
+  const list = runs[rid]?.memory;
+  if (!box || !list) return;
+  box.innerHTML = list.map((m) => m.status === "pending"
+    ? `<div class="memcard" data-id="${esc(m.id)}"><b>💾 Remember this?</b>
+        <input value="${esc(m.text)}" aria-label="Fact to remember" autocomplete="off">
+        <div class="draft-actions"><button type="button" class="save">Save to Brain</button><button type="button" class="dismiss">Dismiss</button></div></div>`
+    : `<div class="memcard done"><b>${m.status === "saved" ? "✓ Saved to Brain" : "Dismissed"}</b> <span class="muted">${esc(m.text)}</span></div>`).join("");
+  box.querySelectorAll(".memcard[data-id]").forEach((card) => {
+    const go = async (save) => {
+      card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+      const text = card.querySelector("input").value.trim();
+      const r = await fetch(`/api/memory/${rid}/${card.dataset.id}`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ save, text }) });
+      if (r.status === 401) return toLogin();
+      const m = list.find((x) => x.id === card.dataset.id);
+      Object.assign(m, r.ok ? { status: (await r.json()).status, text } : { status: "dismissed" });
+      renderMemory(rid);
+    };
+    card.querySelector(".save").onclick = () => go(true);
+    card.querySelector(".dismiss").onclick = () => go(false);
+  });
 }
 
 // ---------- Email drafts: the agent prepares, Mamlesh reviews, edits and sends ----------
@@ -528,7 +555,7 @@ async function loadChat(id) {
     for (const m of chat.messages) {
       runs[m.run_id] ||= { query: m.query, answer: m.answer, status: m.status, usage: m.usage || {}, totals: m.totals,
                            events: null, open: { events: false, cost: false }, error: m.status === "error" ? "This query failed." : "",
-                           drafts: m.drafts || [], approvals: m.approvals || [] };
+                           drafts: m.drafts || [], approvals: m.approvals || [], memory: m.memory || [] };
       messages.push(m.run_id);
     }
     if (!chat.messages.length) { chatId = null; store.set("chatId", null); }
@@ -548,9 +575,17 @@ $("history-btn").onclick = async () => {
   if (r.status === 401) return toLogin();
   const chats = await r.json();
   list.innerHTML = chats.length
-    ? chats.map((c) => `<button type="button" data-id="${esc(c.chat_id)}" class="${c.chat_id === chatId ? "current" : ""}">${esc(c.title)}<small>${new Date(c.updated_at).toLocaleString()}</small></button>`).join("")
+    ? chats.map((c) => `<div class="chat-row"><button type="button" data-id="${esc(c.chat_id)}" class="${c.chat_id === chatId ? "current" : ""}">${esc(c.title)}<small>${new Date(c.updated_at).toLocaleString()}</small></button>
+        <button type="button" class="chat-del" data-del="${esc(c.chat_id)}" title="Delete this chat" aria-label="Delete chat">✕</button></div>`).join("")
     : `<p class="muted">No saved chats yet.</p>`;
   list.querySelectorAll("button[data-id]").forEach((b) => (b.onclick = () => loadChat(b.dataset.id)));
+  list.querySelectorAll("button[data-del]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Delete this chat with its messages and traces? Sent emails and saved Brain notes are kept. This can't be undone.")) return;
+    const r = await fetch(`/api/chats/${b.dataset.del}`, { method: "DELETE" });
+    if (r.status === 401) return toLogin();
+    if (b.dataset.del === chatId) loadChat(null);
+    b.closest(".chat-row").remove();
+  }));
 };
 
 $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendMessage(); });
@@ -812,6 +847,7 @@ function eventKind(ev) {
 
 function onEvent(ev) {
   if (ev.type.startsWith("eval.")) return; // shown on the Observability page
+  if (ev.type === "chat.title") return;     // the History list reads titles when it opens
   if (ev.type === "portfolio.updated") {
     portfolio = undefined;
     if (selected === "d:finance") renderPortfolio(true);
@@ -833,6 +869,7 @@ function onEvent(ev) {
   if (r) {
     if (ev.type === "email.draft") { (r.drafts ||= []).push(ev.draft); renderDrafts(ev.run_id); }
     if (ev.type === "approval.request" || ev.type === "approval.result") onApprovalEvent(ev);
+    if (ev.type === "memory.suggest") { r.memory = ev.suggestions; renderMemory(ev.run_id); }
     if (ev.type === "token") r.answer += ev.text;
     else {
       r.events?.push(ev);

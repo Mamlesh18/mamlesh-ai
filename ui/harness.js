@@ -121,7 +121,7 @@ async function overview(v) {
     <div class="h-kpis">
       ${tile(ms(k.p50_ms), "typical answer time", `p95 ${ms(k.p95_ms)}`)}
       ${tile(ms(k.ttft_p50_ms), "until the first word", "median")}
-      ${tile(usd(k.cost), "total cost", `${usd(k.avg_cost)} per query`)}
+      ${tile(usd(k.cost), "total cost", `${usd(k.avg_cost)} per query${m.background_cost ? ` + ${usd(m.background_cost)} titles/summaries` : ""}`)}
       ${tile(tok(k.avg_tokens), "tokens per query", `${k.cached_share}% of input cached`)}
       ${tile(k.avg_llm_calls, "LLM calls per query")}
       ${tile(`${k.queries ? Math.round((k.errors / k.queries) * 100) : 0}%`, "failed queries", `${k.errors} of ${k.queries}`)}

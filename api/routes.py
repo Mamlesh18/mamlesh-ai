@@ -86,6 +86,28 @@ async def get_chat(chat_id: str):
     return await run_service.get_chat(chat_id)
 
 
+@router.delete("/api/chats/{chat_id}")
+async def delete_chat(chat_id: str):
+    """Delete a chat with its messages, traces, approvals and unsent drafts."""
+    from services import conversation
+    return await conversation.delete_chat(chat_id)
+
+
+class MemoryDecision(BaseModel):
+    save: bool
+    text: str | None = None  # the fact as edited in the card
+
+
+@router.post("/api/memory/{run_id}/{suggestion_id}")
+async def decide_memory(run_id: str, suggestion_id: str, body: MemoryDecision):
+    """Save (to the Brain) or dismiss a "Remember this?" card."""
+    from services import conversation
+    try:
+        return {"status": await conversation.decide_memory(run_id, suggestion_id, body.save, body.text)}
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
 @router.get("/api/me")
 def me():
     """Who is logged in (for the profile menu)."""

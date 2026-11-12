@@ -4,6 +4,7 @@
   - its tools      (its MCP servers from mcp_servers/config.py + custom tools from tools/)
 """
 from langchain.agents import create_agent
+from langchain.agents.middleware import ClearToolUsesEdit, ContextEditingMiddleware
 from langchain_openai import ChatOpenAI
 
 from agents.tool_selection import KEEP, MIN_TOOLS, ToolSelector
@@ -23,6 +24,8 @@ DOMAINS = {
     "brain": "Mamlesh's long-term memory and knowledge base: facts about Mamlesh, saved notes and documents. Search them or save new ones.",
 }
 
+
+TRIM_AT = 12_000  # tokens
 
 # Core tools an agent must always see, even when tool selection hides the rest.
 ALWAYS_TOOLS = {
@@ -59,10 +62,14 @@ def build_domain_agents(mcp_tools: dict) -> tuple[dict, dict, dict]:
         prompt = load_prompt(domain).replace("{memory_dir}", str(MEMORY_DIR)).replace("{root_dir}", str(ROOT_DIR))
         # Many tools -> show the model only the ones that fit the task (agents/tool_selection.py)
         middleware = [ToolSelector(domain, tools, always=ALWAYS_TOOLS.get(domain, set()))] if len(tools) >= MIN_TOOLS else []
+        # Long agent runs: once the conversation passes ~TRIM_AT tokens, older tool results (all but the last 3)
+        # are replaced by a short placeholder, so every later LLM call doesn't pay for them again.
+        middleware.append(ContextEditingMiddleware(edits=[ClearToolUsesEdit(
+            trigger=TRIM_AT, keep=3, placeholder="[older tool result removed to save space - call the tool again if needed]")]))
         agents[domain] = create_agent(llm, tools=tools, system_prompt=prompt, middleware=middleware)
         tool_owner[domain] = owner
         context[domain] = context_size(prompt, tools)
-        if middleware:  # roughly what is sent per call now: the prompt + about KEEP tools
+        if len(tools) >= MIN_TOOLS:  # roughly what is sent per call now: the prompt + about KEEP tools
             c = context[domain]
             c["selected"] = KEEP
             c["total_all_tools"] = c["total"]

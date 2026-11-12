@@ -147,4 +147,6 @@ async def summary(days: int = 7) -> dict:
         "expensive": [run_row(r) for r in sorted(runs, key=lambda r: -r["attrs"].get("cost", 0))[:8]],
         "recent": [run_row(r) for r in sorted(runs, key=lambda r: r["start"], reverse=True)[:15]],
         "guardrails": await _guardrails(since),
+        "background_cost": round(sum(c.get("background_cost", 0) for c in await database.db.chats.find(
+            {"updated_at": {"$gte": since}}, {"background_cost": 1}).to_list(5000)), 5),
     }

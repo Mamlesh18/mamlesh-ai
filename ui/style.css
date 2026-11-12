@@ -379,3 +379,14 @@ ul.versions { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; 
 .approval .approve { background: var(--green); } .approval .reject { background: var(--paper); }
 .approval p { margin: 0; font-size: 13px; }
 #chat-fab.attention { background: var(--orange); color: var(--ink); animation: nudge 1.2s ease-in-out infinite; }
+
+/* ---------- Conversation: memory cards, chat delete ---------- */
+.memory:empty { display: none; }
+.memcard { display: grid; gap: 6px; margin-top: 10px; padding: 10px; border: 3px solid var(--ink); background: #e6f0ff; box-shadow: 3px 3px 0 var(--ink); font-size: 13px; }
+.memcard.done { display: block; background: var(--bg); box-shadow: none; border-width: 2px; }
+.memcard input { padding: 7px 8px; border: 2px solid var(--ink); background: var(--paper); font: 500 13px var(--sans); }
+.memcard .save { background: var(--blue); color: #fff; }
+.chat-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: start; margin-bottom: 8px; }
+.chat-row button[data-id] { margin-bottom: 0 !important; }
+#chat-list .chat-del { width: auto; padding: 8px 10px; }
+#chat-list .chat-del:hover { background: var(--red); color: #fff; }

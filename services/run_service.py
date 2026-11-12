@@ -10,6 +10,7 @@ from mcp_servers import client as mcp_client
 from mcp_servers import oauth
 from mcp_servers.client import load_mcp_tools
 from mcp_servers.config import MCP_SERVERS
+from services import conversation
 from services import db as database
 from services.events import emit
 from utils.logger import get_logger
@@ -151,18 +152,6 @@ def start_run(query: str, source: str = "text", chat_id: str | None = None) -> t
     return run_id, chat_id
 
 
-HISTORY_TURNS = 6  # how many earlier question/answer pairs of the chat the Orchestrator sees
-
-
-async def _chat_history(chat_id: str) -> str:
-    """The last few turns of this chat, so follow-up questions ("and that fund?") make sense."""
-    if database.db is None:
-        return ""
-    turns = await database.db.runs.find({"chat_id": chat_id, "status": "done"}, {"query": 1, "answer": 1}) \
-        .sort("started_at", -1).limit(HISTORY_TURNS).to_list(HISTORY_TURNS)
-    return "\n\n".join(f"User: {t['query']}\nAssistant: {t['answer'][:800]}" for t in reversed(turns))
-
-
 async def _run(run_id: str, query: str, source: str, chat_id: str):
     started = datetime.now(timezone.utc)
     await emit(run_id, "run.start", query=query, source=source, chat_id=chat_id)
@@ -170,7 +159,7 @@ async def _run(run_id: str, query: str, source: str, chat_id: str):
     trace = []  # spans of this query (harness/tracing.py), saved in one write at the end
     root = tracing.start_span(trace, "run", "query", None, span_id=run_id, query=query[:300], chat_id=chat_id, source=source,
                               prompts=prompt_registry.active_versions())
-    history = await _chat_history(chat_id)
+    history = await conversation.history(chat_id)  # rolling summary + last turns (services/conversation.py)
     error = None
     try:
         out = await system["graph"].ainvoke(
@@ -202,6 +191,12 @@ async def _run(run_id: str, query: str, source: str, chat_id: str):
             {"$set": {"updated_at": ended}, "$setOnInsert": {"title": query[:60], "created_at": started}},
             upsert=True,
         )
+        if status == "done":  # title, rolling summary, "remember this?" - after the answer, so no extra wait
+            planner = next((sp for sp in trace if sp["kind"] == "planner"), None)
+            planned = (planner or {}).get("attrs", {}).get("steps", [])
+            task = asyncio.create_task(conversation.after_run(chat_id, run_id, query, planned))
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
 
 
 def _run_out(r: dict) -> dict:
