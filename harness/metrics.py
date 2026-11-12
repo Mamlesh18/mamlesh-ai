@@ -95,7 +95,9 @@ async def summary(days: int = 7) -> dict:
                 "duration_ms": r["duration_ms"], "cost": a.get("cost", 0), "status": r["status"],
                 "tokens": a.get("input_tokens", 0) + a.get("output_tokens", 0), "llm_calls": a.get("calls", 0)}
 
-    ttft = [s["attrs"].get("ttft_ms") for s in by_kind["synthesizer"]]
+    # Wait until the first word, from the moment of asking (older traces only have it inside the synthesizer)
+    ttft = [r["attrs"]["first_word_ms"] for r in runs if r["attrs"].get("first_word_ms") is not None] \
+        or [s["attrs"].get("ttft_ms") for s in by_kind["synthesizer"]]
     oldest = await database.db.spans.find_one({}, sort=[("start", 1)])
     return {
         "available": True,

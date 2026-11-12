@@ -2,6 +2,11 @@
 
     planner  ->  domain (one per step, all run in parallel)  ->  synthesize
 
+Shortcuts that save an LLM call (and its wait):
+  - no agent needed (greetings, small talk): the planner writes the reply itself;
+  - only one agent needed: that agent's answer is streamed to the chat as the final answer.
+The synthesizer only runs when several agents' results must be combined (or an agent failed).
+
 Every step reports what it is doing through services.events.emit(), which drives the live UI.
 """
 import operator
@@ -32,6 +37,21 @@ class Step(BaseModel):
 
 class Plan(BaseModel):
     steps: list[Step] = Field(default_factory=list)
+    reply: str = Field(default="", description="Only when steps is empty: the complete answer to the user. Otherwise empty.")
+
+
+# Added to the task when one agent's answer goes straight to the user (no synthesizer to rewrite it).
+DIRECT_NOTE = ("\n\n(Your reply is shown to Mamlesh as the final answer. Address Mamlesh as \"you\". Be direct and concise; "
+               "it may be read aloud, so avoid long tables. Don't mention internal agents. If an email draft was "
+               "prepared, don't repeat its text: say who it's for and that it is ready to review and send below.)")
+
+
+def mark_first_word(config: RunnableConfig):
+    """Record on the query's root span how long the user waited for the first word of the answer."""
+    c = config["configurable"]
+    root = next((s for s in c.get("trace") or [] if s["_id"] == c.get("root_span")), None)
+    if root is not None and "first_word_ms" not in root["attrs"]:
+        root["attrs"]["first_word_ms"] = int((datetime.now(timezone.utc) - root["start"]).total_seconds() * 1000)
 
 
 class State(TypedDict, total=False):
@@ -48,15 +68,22 @@ class AgentEvents(AsyncCallbackHandler):
     usage is the run's shared totals dict: {agent: {"calls", "input_tokens", "cached_tokens", "output_tokens", "cost"}}
     """
 
-    def __init__(self, run_id: str, domain: str, owner: dict, usage: dict, trace: list | None = None, parent: str | None = None):
+    def __init__(self, run_id: str, domain: str, owner: dict, usage: dict, trace: list | None = None, parent: str | None = None,
+                 stream_to=None):
         self.run_id, self.domain, self.owner, self.usage = run_id, domain, owner, usage
         self.trace, self.parent = trace, parent  # spans go into the query's trace, under the given parent span
+        self.stream_to = stream_to  # config of the query when this agent's words go straight to the chat
         self.calls = {}      # langchain run id -> (tool name, start time)
         self.spans = {}      # langchain run id -> open span (LLM call or tool call)
 
     async def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         self.spans[run_id] = start_span(self.trace, "llm", f"{self.domain} · LLM call", self.parent,
                                         agent=self.domain, model=OPENAI_MODEL, messages=sum(len(m) for m in messages))
+
+    async def on_llm_new_token(self, token, *, run_id, **kwargs):
+        if self.stream_to is not None and token:  # tool-calling steps have no text, so only the answer streams
+            mark_first_word(self.stream_to)
+            await emit(self.run_id, "token", text=token)
 
     async def on_llm_error(self, error, *, run_id, **kwargs):
         if run_id in self.spans:
@@ -119,18 +146,19 @@ class AgentEvents(AsyncCallbackHandler):
 def build_orchestrator(agents: dict, tool_owner: dict):
     """Returns (graph, context) where context is the orchestrator's own prompt sizes in tokens."""
     llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0, stream_usage=True)
+    # Descriptions only: listing every tool name cost ~1k tokens on every question.
     domain_list = "\n".join(
-        f"- {name}: {desc} | tools: {', '.join(tool_owner[name]) or 'none yet'}"
+        f"- {name}: {desc}{'' if tool_owner[name] else ' (NOT AVAILABLE: no tools connected)'}"
         for name, desc in DOMAINS.items()
     )
     planner_prompt = load_prompt("planner").replace("{domains}", domain_list)
     synth_prompt = load_prompt("synthesizer")
     context = {"planner_prompt_tokens": count_tokens(planner_prompt), "synthesizer_prompt_tokens": count_tokens(synth_prompt)}
 
-    def events(config: RunnableConfig, agent: str, parent: str | None = None) -> dict:
+    def events(config: RunnableConfig, agent: str, parent: str | None = None, stream: bool = False) -> dict:
         c = config["configurable"]
         return {"callbacks": [AgentEvents(c["run_id"], agent, tool_owner.get(agent, {}), c["usage"],
-                                          c.get("trace"), parent or c.get("root_span"))]}
+                                          c.get("trace"), parent or c.get("root_span"), config if stream else None)]}
 
     def span(config: RunnableConfig, kind: str, name: str, **attrs) -> dict:
         c = config["configurable"]
@@ -151,25 +179,34 @@ def build_orchestrator(agents: dict, tool_owner: dict):
             end_span(s, status="error", error=str(e))
             raise
         steps = [st.model_dump() for st in plan.steps if st.domain in agents]
-        end_span(s, steps=[st["domain"] for st in steps], history_chars=len(state.get("history", "")))
+        reply = plan.reply.strip() if not steps else ""
+        end_span(s, steps=[st["domain"] for st in steps], history_chars=len(state.get("history", "")), replied=bool(reply))
         await emit(run_id, "plan", steps=steps)
+        if reply:  # nothing for the agents to do: the planner answered (saves the synthesizer call)
+            mark_first_word(config)
+            await emit(run_id, "token", text=reply)
+            await emit(run_id, "node.end", node="orchestrator")
+            return {"steps": [], "answer": reply}
         return {"steps": steps}
 
     def dispatch(state: State):
+        if state.get("answer"):
+            return END
         if not state.get("steps"):
             return "synthesize"
-        return [Send("domain", {"query": state["query"], **step}) for step in state["steps"]]
+        direct = len(state["steps"]) == 1  # one agent: its answer is the final answer
+        return [Send("domain", {"query": state["query"], **step, "direct": direct}) for step in state["steps"]]
 
     async def domain(step: dict, config: RunnableConfig):
         run_id = config["configurable"]["run_id"]
-        name, task = step["domain"], step["task"]
-        s = span(config, "agent", f"{name} agent", agent=name, task=task[:300])
+        name, task, direct = step["domain"], step["task"], step.get("direct", False)
+        s = span(config, "agent", f"{name} agent", agent=name, task=task[:300], direct=direct)
         await emit(run_id, "domain.start", domain=name, task=task)
         try:
             now = datetime.now().strftime("%A, %Y-%m-%d %H:%M")
             out = await agents[name].ainvoke(
-                {"messages": [("user", f"(Current date and time: {now})\n\n{task}")]},
-                config={**events(config, name, s["_id"]), "recursion_limit": 25, "configurable": {"run_id": run_id}},
+                {"messages": [("user", f"(Current date and time: {now})\n\n{task}" + (DIRECT_NOTE if direct else ""))]},
+                config={**events(config, name, s["_id"], stream=direct), "recursion_limit": 25, "configurable": {"run_id": run_id}},
             )
             result, status = out["messages"][-1].content, "done"
             end_span(s, messages=len(out["messages"]))
@@ -177,7 +214,11 @@ def build_orchestrator(agents: dict, tool_owner: dict):
             result, status = f"Failed: {e}", "error"
             end_span(s, status="error", error=str(e))
         await emit(run_id, "domain.end", domain=name, status=status, result=result)
-        return {"results": [{"domain": name, "task": task, "result": result}]}
+        out = {"results": [{"domain": name, "task": task, "result": result}]}
+        if direct and status == "done":  # the agent's answer is the final answer: no synthesizer call
+            out["answer"] = result
+            await emit(run_id, "node.end", node="orchestrator")
+        return out
 
     async def synthesize(state: State, config: RunnableConfig):
         run_id = config["configurable"]["run_id"]
@@ -193,6 +234,7 @@ def build_orchestrator(agents: dict, tool_owner: dict):
                 if chunk.content:
                     if first is None:  # time to first word: how long you wait before the answer starts
                         first = int((datetime.now(timezone.utc) - s["start"]).total_seconds() * 1000)
+                        mark_first_word(config)
                     answer += chunk.content
                     await emit(run_id, "token", text=chunk.content)
         except Exception as e:
@@ -207,7 +249,7 @@ def build_orchestrator(agents: dict, tool_owner: dict):
     graph.add_node("domain", domain)
     graph.add_node("synthesize", synthesize)
     graph.add_edge(START, "planner")
-    graph.add_conditional_edges("planner", dispatch, ["domain", "synthesize"])
-    graph.add_edge("domain", "synthesize")
+    graph.add_conditional_edges("planner", dispatch, ["domain", "synthesize", END])
+    graph.add_conditional_edges("domain", lambda s: END if s.get("answer") else "synthesize", ["synthesize", END])
     graph.add_edge("synthesize", END)
     return graph.compile(), context

@@ -413,7 +413,7 @@ async function evalRun(v, id) {
       ${tile(pctTxt(s.routing), "right agents", `${s.routing.passed}/${s.routing.of}`)}
       ${tile(pctTxt(s.tools), "right tools", `${s.tools.passed}/${s.tools.of}`)}
       ${tile(pctTxt(s.judge), "judge passed", `avg ${s.judge_avg_score ?? "–"}/5`)}
-      ${tile(ms(s.p50_ms), "typical time", `p95 ${ms(s.p95_ms)}`)}
+      ${tile(ms(s.p50_ms), "typical time", `p95 ${ms(s.p95_ms)}${s.first_word_p50_ms ? ` · first word ${ms(s.first_word_p50_ms)}` : ""}`)}
       ${tile(tok(s.avg_tokens), "tokens per case", `${s.avg_llm_calls} LLM calls`)}
       ${tile(usd(s.avg_cost), "cost per case", `run ${usd(s.total_cost)} + judge ${usd(s.judge_cost)}`)}
     </div>
@@ -465,6 +465,7 @@ async function compare(v, a, b) {
           ${line("Judge passed", so.judge.rate, sn.judge.rate, p, false)}
           ${line("Typical time (p50)", so.p50_ms, sn.p50_ms, ms, true)}
           ${line("Slow time (p95)", so.p95_ms, sn.p95_ms, ms, true)}
+          ${line("First word (p50)", so.first_word_p50_ms, sn.first_word_p50_ms, ms, true)}
           ${line("Tokens per case", so.avg_tokens, sn.avg_tokens, tok, true)}
           ${line("LLM calls per case", so.avg_llm_calls, sn.avg_llm_calls, (x) => (x == null ? "–" : String(Math.round(x * 100) / 100)), true)}
           ${line("Cost per case", so.avg_cost, sn.avg_cost, usd, true)}

@@ -569,8 +569,9 @@ function contextHtml(c) {
       <div class="stat"><b>${tok(c.total)}</b><span>tokens per call</span></div>
       <div class="stat"><b>${c.tools}</b><span>tools</span></div>
       <div class="stat"><b>${tok(c.prompt_tokens)}</b><span>prompt tokens</span></div>
-      <div class="stat"><b>${tok(c.tool_tokens)}</b><span>tool definition tokens</span></div>
-    </div>`;
+      <div class="stat"><b>${tok(c.tool_tokens)}</b><span>tool definition tokens (all)</span></div>
+    </div>
+    ${c.selected ? `<p class="muted">Only the ~${c.selected} tools that fit each task are sent, so about ${tok(c.total)} instead of ${tok(c.total_all_tools)} tokens per call.</p>` : ""}`;
 }
 
 async function renderServer(id) {

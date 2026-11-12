@@ -162,7 +162,7 @@ async def run_case(case: dict, graph) -> dict:
         "passed": all(c["passed"] for c in checks.values()),
         "checks": checks, "planned": planned, "tools": tools, "answer": answer, "error": error,
         "judge_score": verdict["score"] if verdict else None, "judge_cost": verdict["cost"] if verdict else 0,
-        "latency_ms": root["duration_ms"], "tokens": totals["input_tokens"] + totals["output_tokens"],
+        "latency_ms": root["duration_ms"], "first_word_ms": root["attrs"].get("first_word_ms"), "tokens": totals["input_tokens"] + totals["output_tokens"],
         "cached_tokens": totals["cached_tokens"], "cost": totals["cost"], "llm_calls": totals["calls"],
     }
 
@@ -196,6 +196,7 @@ def summarize(results: list[dict]) -> dict:
         "judge_avg_score": round(sum(scores) / len(scores), 2) if scores else None,
         "errors": sum(1 for r in results if r["error"]),
         "p50_ms": pct(lat, 50), "p95_ms": pct(lat, 95),
+        "first_word_p50_ms": pct([r.get("first_word_ms") for r in results if r.get("first_word_ms") is not None], 50),
         "avg_tokens": round(sum(r["tokens"] for r in results) / n),
         "avg_llm_calls": round(sum(r["llm_calls"] for r in results) / n, 2),
         "avg_cost": round(sum(r["cost"] for r in results) / n, 6),

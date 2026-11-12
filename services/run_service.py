@@ -35,7 +35,12 @@ async def startup():
     system["mcp"] = await load_mcp_tools()
     _build_agents()
     for name, c in system["context"].items():
-        log.info("  %-12s %3d tools, %6d tokens sent on every call", name, c["tools"], c["total"])
+        log.info("  %-12s %3d tools, %6d tokens sent on every call%s", name, c["tools"], c["total"],
+                 f" (tool selection; {c['total_all_tools']} with all tools)" if c.get("selected") else "")
+    from agents import tool_selection  # embed tool descriptions now, so the first question doesn't wait
+    task = asyncio.create_task(tool_selection.warm([t for d in system["mcp"].values() for s in d.values() for t in s["tools"]]))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
 
 
 def _build_agents():

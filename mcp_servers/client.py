@@ -1,8 +1,13 @@
 """Connects to every enabled MCP server in config.py and loads its tools."""
+import asyncio
 import json
 import re
 
+import anyio
+import httpx
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools as tools_from_session
+from mcp.shared.exceptions import McpError
 
 from mcp_servers import oauth
 from mcp_servers.config import MCP_SERVERS
@@ -55,6 +60,85 @@ def _limit_output(tool, limit: int = MAX_TOOL_OUTPUT_CHARS):
 
     tool.coroutine = limited
     return tool
+
+
+class LiveSession:
+    """One MCP session kept open for the app's lifetime, instead of a new connection for every tool call.
+
+    Without it, every call to a stdio server starts a new process (npx/python: 1-3 s), and every call to an
+    HTTP server repeats the MCP handshake. The session lives in its own background task (MCP sessions must be
+    opened and closed in the same task). If it drops (process died, server forgot the session), the next call
+    reconnects and retries once. Tools only use list_tools() and call_tool(), so this object stands in for
+    the real session.
+    """
+
+    def __init__(self, client: MultiServerMCPClient, name: str):
+        self.client, self.name = client, name
+        self.session = None
+        self.task: asyncio.Task | None = None
+        self.stop = asyncio.Event()
+        self.error: BaseException | None = None
+        self.lock = asyncio.Lock()
+
+    async def _own(self, ready: asyncio.Event):
+        try:
+            async with self.client.session(self.name) as session:
+                self.session = session
+                ready.set()
+                await self.stop.wait()
+        except BaseException as e:  # noqa: BLE001 - reported to the caller through self.error
+            self.error = e
+        finally:
+            self.session = None
+            ready.set()
+
+    async def _ensure(self):
+        async with self.lock:
+            if self.session is not None and self.task and not self.task.done():
+                return self.session
+            ready, self.stop, self.error = asyncio.Event(), asyncio.Event(), None
+            self.task = asyncio.create_task(self._own(ready), name=f"mcp-session-{self.name}")
+            await ready.wait()
+            if self.session is None:
+                raise self.error or RuntimeError(f"Could not connect to {self.name}")
+            return self.session
+
+    async def list_tools(self, cursor=None, **kwargs):
+        return await (await self._ensure()).list_tools(cursor=cursor, **kwargs)
+
+    async def call_tool(self, name, arguments=None, **kwargs):
+        session = await self._ensure()
+        try:
+            return await session.call_tool(name, arguments, **kwargs)
+        except Exception as e:
+            if not _connection_lost(e):
+                raise
+            log.info("MCP %s: connection lost (%s), reconnecting", self.name, type(e).__name__)
+            await self.close()
+            return await (await self._ensure()).call_tool(name, arguments, **kwargs)
+
+    async def close(self):
+        if self.task and not self.task.done():
+            self.stop.set()
+            await asyncio.wait([self.task], timeout=5)
+
+
+def _connection_lost(e: Exception) -> bool:
+    if isinstance(e, (anyio.ClosedResourceError, anyio.BrokenResourceError, anyio.EndOfStream, httpx.TransportError)):
+        return True
+    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (400, 404):  # unknown/expired session id
+        return True
+    text = str(e).lower()
+    return isinstance(e, McpError) and any(w in text for w in ("closed", "terminated", "session", "disconnected"))
+
+
+_live: dict[str, LiveSession] = {}  # "domain/name" -> open session
+
+
+async def close_all():
+    """Close every open MCP session (on shutdown)."""
+    await asyncio.gather(*(s.close() for s in _live.values()), return_exceptions=True)
+    _live.clear()
 
 
 def _block_paths(tool, blocked: list[str]):
@@ -132,9 +216,15 @@ async def connect_server(domain: str, name: str) -> dict:
             return {**info, "status": "auth_required"}
         cfg["auth"] = oauth.BearerAuth(server)
 
+    key = f"{domain}/{name}"
+    if key in _live:  # reconnecting (e.g. after logging in): drop the old session
+        await _live.pop(key).close()
+    live = None
     try:
         client = MultiServerMCPClient({name: cfg})
-        tools = await client.get_tools(server_name=name)
+        live = LiveSession(client, name)
+        tools = await tools_from_session(live, server_name=name)
+        _live[key] = live
         tools = [_limit_output(t) for t in tools]
         if blocked:
             tools = [_block_paths(t, blocked) for t in tools]
@@ -143,6 +233,8 @@ async def connect_server(domain: str, name: str) -> dict:
         log.info("MCP %s/%s connected with %d tools", domain, name, len(tools))
         return {**info, "status": "connected", "tools": tools}
     except Exception as e:
+        if live:
+            await live.close()
         error = _error_text(e)
         status = "auth_required" if uses_oauth and _is_auth_error(error) else "error"
         log.warning("MCP %s/%s %s: %s", domain, name, status, error)

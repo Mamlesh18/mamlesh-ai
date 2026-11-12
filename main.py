@@ -26,6 +26,8 @@ async def lifespan(app: FastAPI):
     await run_service.startup()
     log.info("Open http://%s:%d", HOST, PORT)
     yield
+    from mcp_servers import client as mcp_client
+    await mcp_client.close_all()  # stop the MCP server processes and sessions
 
 
 app = FastAPI(title="Mamlesh AI OS", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
